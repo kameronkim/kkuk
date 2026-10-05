@@ -23,6 +23,7 @@ public struct InputEntry: Equatable, Sendable {
 public struct InputSnapshot: Sendable {
     public let input: URL
     public let entries: [InputEntry]
+    public let excludedPaths: [String]
     public var isDirectory: Bool { entries.first { $0.path == input.lastPathComponent }?.isDirectory ?? false }
     public var totalBytes: UInt64 { entries.filter { !$0.isDirectory }.reduce(0) { $0 + $1.size } }
     public var fileCount: Int { entries.filter { !$0.isDirectory }.count }
@@ -38,6 +39,7 @@ public enum InputScanner {
         }
         guard folder.path != "/" else { throw KkukError.message("시스템 루트 대신 압축할 파일이나 폴더를 선택해 주세요.") }
         var entries: [InputEntry] = []
+        var excludedPaths: [String] = []
         func visit(_ url: URL, path: String) throws {
             try checkCancellation()
             guard !path.contains("\n"), !path.contains("\r") else {
@@ -45,6 +47,12 @@ public enum InputScanner {
             }
             let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
             let type = attributes[.type] as? FileAttributeType
+            // Unix sockets are live communication endpoints, not archive data.
+            // Classify by filesystem type, preserving regular files and symbolic links.
+            if type == .typeSocket {
+                excludedPaths.append(path)
+                return
+            }
             guard type == .typeDirectory || type == .typeRegular || type == .typeSymbolicLink else {
                 throw KkukError.message("일반 파일·폴더·심볼릭 링크만 압축할 수 있습니다: \(path)")
             }
@@ -62,7 +70,7 @@ public enum InputScanner {
             }
         }
         try visit(folder, path: folder.lastPathComponent)
-        return InputSnapshot(input: folder, entries: entries.sorted { $0.path < $1.path })
+        return InputSnapshot(input: folder, entries: entries.sorted { $0.path < $1.path }, excludedPaths: excludedPaths.sorted())
     }
 }
 
@@ -182,14 +190,14 @@ public final class ArchiveJob: Sendable {
     public let engine: URL
     public init(engine: URL) { self.engine = engine }
     public func cancel() { runner.cancel() }
-    public static func validateDestination(_ destination: URL, source: URL) throws {
+    public static func validateDestination(_ destination: URL, source: URL, requireAvailable: Bool = true) throws {
         let parent = destination.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
         let root = source.resolvingSymlinksInPath().standardizedFileURL
         guard parent.path != root.path, !parent.path.hasPrefix(root.path + "/") else {
             throw KkukError.message("압축 결과는 원본 폴더 바깥에 저장해 주세요.")
         }
         guard destination.pathExtension.lowercased() == "7z" else { throw KkukError.message("저장 파일의 확장자는 .7z여야 합니다.") }
-        guard !FileManager.default.fileExists(atPath: destination.path) else {
+        guard !requireAvailable || (try? FileManager.default.attributesOfItem(atPath: destination.path)) == nil else {
             throw KkukError.message("같은 이름의 파일이 있습니다. 다른 이름으로 저장해 주세요.")
         }
     }
@@ -198,11 +206,19 @@ public final class ArchiveJob: Sendable {
             $0.hasPrefix("Path = ") ? String($0.dropFirst(7)) : nil
         })
     }
+    public func executeBesideInput(snapshot: InputSnapshot, preset: CompressionPreset,
+                                   progress: (ArchiveStage, Double?) -> Void = { _, _ in }) throws -> ArchiveResult {
+        let destination = snapshot.input.deletingLastPathComponent()
+            .appendingPathComponent(snapshot.input.lastPathComponent + ".7z")
+        return try execute(snapshot: snapshot, preset: preset, destination: destination,
+                           numberOnCollision: true, progress: progress)
+    }
     public func execute(snapshot: InputSnapshot, preset: CompressionPreset, destination: URL,
+                        numberOnCollision: Bool = false,
                         progress: (ArchiveStage, Double?) -> Void = { _, _ in }) throws -> ArchiveResult {
         let fm = FileManager.default
         let start = Date()
-        try Self.validateDestination(destination, source: snapshot.input)
+        try Self.validateDestination(destination, source: snapshot.input, requireAvailable: !numberOnCollision)
         guard fm.isExecutableFile(atPath: engine.path) else { throw KkukError.message("7-Zip 엔진을 찾을 수 없습니다. 앱을 다시 빌드해 주세요.") }
         guard preset.estimatedMemoryBytes <= MemoryBudget.current() else {
             throw KkukError.message("지금은 압축에 사용할 메모리 여유가 부족합니다. 다른 작업을 닫은 뒤 파일이나 폴더를 다시 선택해 주세요.")
@@ -213,9 +229,10 @@ public final class ArchiveJob: Sendable {
         let archive = temporary.appendingPathComponent("result.7z")
         // Explicit solid limit covers this input; two threads avoid independent block parallelism.
         let solidBytes = max(snapshot.totalBytes + 1_073_741_824, 1_073_741_824)
+        let exclusions = snapshot.excludedPaths.map { "-x!" + $0 }
         let args = ["a", "-t7z", "-m0=lzma2", "-mx=9", "-md=\(preset.dictionaryMiB)m",
                     "-mfb=273", "-ms=\(solidBytes)b", "-mmt=2", "-mqs=on", "-sse", "-snl", "-ssp", "-spd",
-                    "-sccUTF-8", "-bb0", "-bsp1", "-y", "--", archive.path, "./" + snapshot.input.lastPathComponent]
+                    "-sccUTF-8", "-bb0", "-bsp1", "-y"] + exclusions + ["--", archive.path, "./" + snapshot.input.lastPathComponent]
         progress(.compressing, 0)
         _ = try runner.run(executable: engine, arguments: args, directory: snapshot.input.deletingLastPathComponent()) { chunk in
             let pattern = #"(?:^|[\s\u0008])(\d{1,3})%"#
@@ -240,11 +257,24 @@ public final class ArchiveJob: Sendable {
             throw KkukError.message("압축하는 동안 원본 파일이나 폴더가 변경됐습니다. 작업을 마친 뒤 다시 압축해 주세요.")
         }
         try runner.checkCancellation()
-        try Self.validateDestination(destination, source: snapshot.input)
-        try fm.moveItem(at: archive, to: destination)
-        let size = (try fm.attributesOfItem(atPath: destination.path)[.size] as? NSNumber)?.uint64Value ?? 0
+        if !numberOnCollision { try Self.validateDestination(destination, source: snapshot.input) }
+        var finalURL = destination
+        var number = 1
+        while true {
+            try runner.checkCancellation()
+            // Exclusive rename commits atomically without overwriting even a dangling symlink.
+            if renamex_np(archive.path, finalURL.path, UInt32(RENAME_EXCL)) == 0 { break }
+            let code = errno
+            guard numberOnCollision && code == EEXIST else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+            }
+            number += 1
+            finalURL = destination.deletingLastPathComponent().appendingPathComponent(
+                destination.deletingPathExtension().lastPathComponent + " (\(number)).7z")
+        }
+        let size = (try fm.attributesOfItem(atPath: finalURL.path)[.size] as? NSNumber)?.uint64Value ?? 0
         progress(.finished, 1)
-        return ArchiveResult(url: destination, originalBytes: snapshot.totalBytes, archiveBytes: size,
+        return ArchiveResult(url: finalURL, originalBytes: snapshot.totalBytes, archiveBytes: size,
                              elapsed: Date().timeIntervalSince(start), preset: preset)
     }
 }
