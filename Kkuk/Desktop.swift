@@ -520,7 +520,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     @objc func about() {
         NSApplication.shared.orderFrontStandardAboutPanel(options: [
-            .applicationName: L10n.text("Kkuk"), .applicationVersion: "0.1.0",
+            .applicationName: L10n.text("Kkuk"), .applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
             .applicationIcon: NSApplication.shared.applicationIconImage as Any,
             .credits: NSAttributedString(string: L10n.text("Press down. Pack smaller.") + "\n7-Zip 26.03 © Igor Pavlov\nhttps://7-zip.org\n" + L10n.text("Licenses are included in the app’s Resources/Licenses folder."))
         ])
