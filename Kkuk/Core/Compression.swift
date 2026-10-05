@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import Darwin.membership
 
 public enum KkukError: LocalizedError {
     case inputMissing
@@ -409,7 +410,19 @@ private final class PinnedDestinationDirectory {
                 throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
             }
             if tag == ACL_EXTENDED_ALLOW && mask & writeMask != 0 {
-                throw KkukError.unsafeDestination
+                guard let qualifier = acl_get_qualifier(entry) else {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+                }
+                defer { acl_free(qualifier) }
+                var identity: id_t = 0
+                var identityType: Int32 = 0
+                let result = mbr_uuid_to_id(qualifier.assumingMemoryBound(to: UInt8.self), &identity, &identityType)
+                // These principals already control the directory or the entire system.
+                // Groups, other users and unresolved identities remain untrusted.
+                guard result == 0, identityType == ID_TYPE_UID,
+                      identity == geteuid() || identity == 0 else {
+                    throw KkukError.unsafeDestination
+                }
             }
         }
     }
