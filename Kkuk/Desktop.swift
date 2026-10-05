@@ -19,6 +19,7 @@ final class AppModel: ObservableObject {
     @Published var error: String?
     @Published var result: ArchiveResult?
     private var job: ArchiveJob?
+    private var cancellationRequested = false
     var onTaskFinished: (() -> Void)?
 
     var engine: URL {
@@ -72,6 +73,7 @@ final class AppModel: ObservableObject {
         // Rescan immediately before execution instead of relying on stale selection metadata.
         let job = ArchiveJob(engine: engine)
         self.job = job
+        cancellationRequested = false
         busy = true; error = nil; result = nil; progress = nil
         status = L10n.text("Preparing compression"); detail = ""
         DispatchQueue.global(qos: .userInitiated).async {
@@ -81,6 +83,7 @@ final class AppModel: ObservableObject {
                 DispatchQueue.main.async { self.snapshot = current; self.preset = preset }
                 let result = try job.executeBesideInput(snapshot: current, preset: preset) { stage, value in
                     DispatchQueue.main.async {
+                        guard self.job === job, !self.cancellationRequested else { return }
                         self.progress = value
                         switch stage {
                         case .compressing: self.status = L10n.text("Kkuk is compressing"); self.detail = ""
@@ -91,6 +94,7 @@ final class AppModel: ObservableObject {
                     }
                 }
                 DispatchQueue.main.async {
+                    self.cancellationRequested = false
                     self.result = result; self.busy = false; self.job = nil; self.progress = nil
                     self.status = L10n.text("Compression and verification complete")
                     self.detail = Self.resultDetail(result)
@@ -102,7 +106,8 @@ final class AppModel: ObservableObject {
         }
     }
     func cancel() {
-        guard let job else { return }
+        guard let job, !cancellationRequested else { return }
+        cancellationRequested = true
         status = L10n.text("Canceling"); detail = ""
         job.cancel()
     }
@@ -110,6 +115,7 @@ final class AppModel: ObservableObject {
         scanGaugeTask?.cancel(); scanGaugeTask = nil
         showsScanGauge = false
         busy = false; scanning = false; progress = nil; job = nil
+        cancellationRequested = false
         if let kkukError = failure as? KkukError, case .cancelled = kkukError {
             error = nil; status = L10n.text("Canceled"); detail = ""
         } else {
