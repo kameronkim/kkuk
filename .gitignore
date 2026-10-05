@@ -1,2 +1,8 @@
+# Swift build products and module caches
+/.build/
+
+# Generated app bundle and icon variants
+/dist/
+
 # macOS Finder metadata
 .DS_Store
