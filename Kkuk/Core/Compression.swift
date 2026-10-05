@@ -223,8 +223,11 @@ public final class ArchiveJob: Sendable {
         }
     }
     public static func listedPaths(_ text: String) -> Set<String> {
-        Set(text.components(separatedBy: .newlines).compactMap {
-            $0.hasPrefix("Path = ") ? String($0.dropFirst(7)) : nil
+        // 7-Zip separates records with LF (or CRLF), not Unicode filename characters.
+        // CR and LF inside source names are rejected by InputScanner.
+        Set(text.components(separatedBy: "\n").compactMap { line in
+            let record = line.hasSuffix("\r") ? String(line.dropLast()) : line
+            return record.hasPrefix("Path = ") ? String(record.dropFirst(7)) : nil
         })
     }
     public func executeBesideInput(snapshot: InputSnapshot, preset: CompressionPreset,
