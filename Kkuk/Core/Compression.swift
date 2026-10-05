@@ -477,6 +477,8 @@ public final class ArchiveJob: Sendable {
         try runner.checkCancellation()
         // Establish private permissions before publishing the file with an exclusive rename.
         try Self.restrictAccess(to: archive, directory: false)
+        // Finish all fallible metadata reads before the atomic publication.
+        let size = (try fm.attributesOfItem(atPath: archive.path)[.size] as? NSNumber)?.uint64Value ?? 0
         var finalURL = initialDestination
         var number = 1
         while true {
@@ -491,7 +493,6 @@ public final class ArchiveJob: Sendable {
             // Always shorten the original base again, reserving space for the full suffix.
             finalURL = try Self.numberedDestination(destination, number: number, nameLimit: nameLimit)
         }
-        let size = (try fm.attributesOfItem(atPath: finalURL.path)[.size] as? NSNumber)?.uint64Value ?? 0
         progress(.finished, 1)
         return ArchiveResult(url: finalURL, originalBytes: snapshot.totalBytes, archiveBytes: size)
     }
