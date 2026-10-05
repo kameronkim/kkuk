@@ -268,6 +268,39 @@ public final class ArchiveJob: Sendable {
             return record.hasPrefix("Path = ") ? String(record.dropFirst(7)) : nil
         })
     }
+    private static func restrictAccess(to url: URL, directory: Bool) throws {
+        // Change the opened object, never a symlink target substituted at this path.
+        let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
+            | (directory ? O_DIRECTORY : 0))
+        guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        defer { close(descriptor) }
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        let expectedType = mode_t(directory ? S_IFDIR : S_IFREG)
+        guard metadata.st_mode & mode_t(S_IFMT) == expectedType else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(EINVAL))
+        }
+        // Mode bits alone do not remove inherited grants on macOS.
+        guard let acl = acl_init(0) else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        defer { acl_free(UnsafeMutableRawPointer(acl)) }
+        if acl_set_fd(descriptor, acl) != 0 {
+            let code = errno
+            // Filesystems without extended ACLs can still enforce POSIX permissions.
+            guard code == ENOTSUP else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(code)) }
+        }
+        let permissions: mode_t = directory ? 0o700 : 0o600
+        guard fchmod(descriptor, permissions) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        guard fstat(descriptor, &metadata) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        guard metadata.st_mode & 0o777 == permissions else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES))
+        }
+    }
     private static func nameLimit(in directory: URL) throws -> Int {
         errno = 0
         let limit = pathconf(directory.path, _PC_NAME_MAX)
@@ -332,6 +365,7 @@ public final class ArchiveJob: Sendable {
         let temporary = destination.deletingLastPathComponent().appendingPathComponent(".kkuk-\(UUID().uuidString)", isDirectory: true)
         try fm.createDirectory(at: temporary, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         defer { try? fm.removeItem(at: temporary) }
+        try Self.restrictAccess(to: temporary, directory: true)
         let archive = temporary.appendingPathComponent("result.7z")
         // Explicit solid limit covers this input; two threads avoid independent block parallelism.
         let solidBytes = max(snapshot.totalBytes + 1_073_741_824, 1_073_741_824)
@@ -360,6 +394,8 @@ public final class ArchiveJob: Sendable {
         }
         try runner.checkCancellation()
         if !numberOnCollision { try Self.validateDestination(destination, source: snapshot.input) }
+        // Establish private permissions before publishing the file with an exclusive rename.
+        try Self.restrictAccess(to: archive, directory: false)
         var finalURL = initialDestination
         var number = 1
         while true {
