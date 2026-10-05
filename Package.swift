@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "Kkuk",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS("26.0")],
     products: [.executable(name: "Kkuk", targets: ["Kkuk"])],
     targets: [
         .target(name: "KkukCore", path: "Kkuk/Core"),
