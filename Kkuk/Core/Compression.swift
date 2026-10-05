@@ -182,7 +182,19 @@ public final class ProcessRunner: @unchecked Sendable {
             lock.lock(); active = nil; lock.unlock()
         }
         var transcript = Data()
-        while let chunk = try pipe.fileHandleForReading.read(upToCount: 8192), !chunk.isEmpty {
+        var buffer = [UInt8](repeating: 0, count: 8192)
+        while true {
+            // A pipe read returns bytes already available instead of waiting to fill the buffer.
+            let count = buffer.withUnsafeMutableBytes {
+                Darwin.read(pipe.fileHandleForReading.fileDescriptor, $0.baseAddress!, $0.count)
+            }
+            if count == 0 { break }
+            if count < 0 {
+                let code = errno
+                if code == EINTR { continue }
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+            }
+            let chunk = Data(buffer.prefix(count))
             transcript.append(chunk)
             output(String(decoding: chunk, as: UTF8.self))
         }
@@ -194,6 +206,32 @@ public final class ProcessRunner: @unchecked Sendable {
             throw KkukError.message("\(reason) (코드 \(process.terminationStatus))\n\(text.suffix(1400))")
         }
         return text
+    }
+}
+
+// Progress tokens can span reads; retain only the current ASCII token.
+struct CompressionProgressParser {
+    private var boundary = true
+    private var digits = 0
+    private var value = 0
+    mutating func consume(_ chunk: String) -> Double? {
+        var latest: Double?
+        for byte in chunk.utf8 {
+            if byte >= 48 && byte <= 57, boundary || digits > 0 {
+                if digits < 3 {
+                    value = value * 10 + Int(byte - 48)
+                    digits += 1
+                } else {
+                    digits = 0; value = 0
+                }
+                boundary = false
+                continue
+            }
+            if byte == 37 && digits > 0 { latest = min(Double(value) / 100, 1) }
+            digits = 0; value = 0
+            boundary = byte == 8 || byte == 32 || (byte >= 9 && byte <= 13)
+        }
+        return latest
     }
 }
 
@@ -302,13 +340,9 @@ public final class ArchiveJob: Sendable {
                     "-mfb=273", "-ms=\(solidBytes)b", "-mmt=2", "-mqs=on", "-sse", "-snl", "-ssp", "-spd",
                     "-sccUTF-8", "-bb0", "-bsp1", "-y"] + exclusions + ["--", archive.path, "./" + snapshot.input.lastPathComponent]
         progress(.compressing, 0)
+        var progressParser = CompressionProgressParser()
         _ = try runner.run(executable: engine, arguments: args, directory: snapshot.input.deletingLastPathComponent()) { chunk in
-            let pattern = #"(?:^|[\s\u0008])(\d{1,3})%"#
-            if let regex = try? NSRegularExpression(pattern: pattern),
-               let match = regex.matches(in: chunk, range: NSRange(chunk.startIndex..., in: chunk)).last,
-               let range = Range(match.range(at: 1), in: chunk), let percent = Double(chunk[range]) {
-                progress(.compressing, min(percent / 100, 1))
-            }
+            if let value = progressParser.consume(chunk) { progress(.compressing, value) }
         }
         progress(.verifying, nil)
         _ = try runner.run(executable: engine, arguments: ["t", "-sccUTF-8", "-bsp0", "--", archive.path])
