@@ -177,9 +177,15 @@ public final class ProcessRunner: @unchecked Sendable {
         process.executableURL = executable
         process.arguments = arguments
         process.currentDirectoryURL = directory
-        var environment = ProcessInfo.processInfo.environment
-        environment["LC_ALL"] = "en_US.UTF-8"
-        process.environment = environment
+        // The engine needs locale and standard filesystem locations, not the app's
+        // secrets, loader settings, or custom executable search paths.
+        process.environment = [
+            "LC_ALL": "en_US.UTF-8",
+            "LANG": "en_US.UTF-8",
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "HOME": NSHomeDirectory(),
+            "TMPDIR": FileManager.default.temporaryDirectory.path
+        ]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
