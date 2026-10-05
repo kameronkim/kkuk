@@ -96,9 +96,7 @@ public enum InputScanner {
 }
 
 public struct CompressionPreset: Equatable, Sendable {
-    public let name: String
     public let dictionaryMiB: Int
-    public let memoryAdjusted: Bool
     public var estimatedMemoryBytes: UInt64 { UInt64(dictionaryMiB * 12 + 128) * 1_048_576 }
     public static func select(inputBytes: UInt64, memoryBudgetBytes: UInt64) -> CompressionPreset {
         let mib: UInt64 = 1_048_576
@@ -112,8 +110,7 @@ public struct CompressionPreset: Equatable, Sendable {
         default: preferred = 1024
         }
         let fitted = choices.last { $0 <= preferred && UInt64($0 * 12 + 128) * mib <= memoryBudgetBytes } ?? 64
-        let names = [64: "소형 고압축", 128: "일반 고압축", 256: "대형 고압축", 512: "초대형 고압축", 1024: "극대형 고압축"]
-        return CompressionPreset(name: names[fitted]!, dictionaryMiB: fitted, memoryAdjusted: fitted < preferred)
+        return CompressionPreset(dictionaryMiB: fitted)
     }
 }
 
@@ -263,8 +260,6 @@ public struct ArchiveResult: Sendable {
     public let url: URL
     public let originalBytes: UInt64
     public let archiveBytes: UInt64
-    public let elapsed: TimeInterval
-    public let preset: CompressionPreset
 }
 
 public final class ArchiveJob: Sendable {
@@ -272,17 +267,6 @@ public final class ArchiveJob: Sendable {
     public let engine: URL
     public init(engine: URL) { self.engine = engine }
     public func cancel() { runner.cancel() }
-    public static func validateDestination(_ destination: URL, source: URL, requireAvailable: Bool = true) throws {
-        let parent = destination.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
-        let root = source.resolvingSymlinksInPath().standardizedFileURL
-        guard parent.path != root.path, !parent.path.hasPrefix(root.path + "/") else {
-            throw KkukError.message("압축 결과는 원본 폴더 바깥에 저장해 주세요.")
-        }
-        guard destination.pathExtension.lowercased() == "7z" else { throw KkukError.message("저장 파일의 확장자는 .7z여야 합니다.") }
-        guard !requireAvailable || (try? FileManager.default.attributesOfItem(atPath: destination.path)) == nil else {
-            throw KkukError.message("같은 이름의 파일이 있습니다. 다른 이름으로 저장해 주세요.")
-        }
-    }
     public static func listedPaths(_ text: String) -> Set<String> {
         // 7-Zip separates records with LF (or CRLF), not Unicode filename characters.
         // CR and LF inside source names are rejected by InputScanner.
@@ -369,18 +353,9 @@ public final class ArchiveJob: Sendable {
                                    progress: (ArchiveStage, Double?) -> Void = { _, _ in }) throws -> ArchiveResult {
         let destination = snapshot.input.deletingLastPathComponent()
             .appendingPathComponent(snapshot.input.lastPathComponent + ".7z")
-        return try execute(snapshot: snapshot, preset: preset, destination: destination,
-                           numberOnCollision: true, progress: progress)
-    }
-    public func execute(snapshot: InputSnapshot, preset: CompressionPreset, destination: URL,
-                        numberOnCollision: Bool = false,
-                        progress: (ArchiveStage, Double?) -> Void = { _, _ in }) throws -> ArchiveResult {
         let fm = FileManager.default
-        let start = Date()
-        let nameLimit = numberOnCollision ? try Self.nameLimit(in: destination.deletingLastPathComponent()) : 0
-        let initialDestination = numberOnCollision
-            ? try Self.numberedDestination(destination, number: 1, nameLimit: nameLimit) : destination
-        try Self.validateDestination(initialDestination, source: snapshot.input, requireAvailable: !numberOnCollision)
+        let nameLimit = try Self.nameLimit(in: destination.deletingLastPathComponent())
+        let initialDestination = try Self.numberedDestination(destination, number: 1, nameLimit: nameLimit)
         guard fm.isExecutableFile(atPath: engine.path) else { throw KkukError.message("7-Zip 엔진을 찾을 수 없습니다. 앱을 다시 빌드해 주세요.") }
         guard preset.estimatedMemoryBytes <= MemoryBudget.current() else {
             throw KkukError.message("지금은 압축에 사용할 메모리 여유가 부족합니다. 다른 작업을 닫은 뒤 파일이나 폴더를 다시 선택해 주세요.")
@@ -425,7 +400,6 @@ public final class ArchiveJob: Sendable {
             throw KkukError.message("압축하는 동안 원본 파일이나 폴더가 변경됐습니다. 작업을 마친 뒤 다시 압축해 주세요.")
         }
         try runner.checkCancellation()
-        if !numberOnCollision { try Self.validateDestination(destination, source: snapshot.input) }
         // Establish private permissions before publishing the file with an exclusive rename.
         try Self.restrictAccess(to: archive, directory: false)
         var finalURL = initialDestination
@@ -435,7 +409,7 @@ public final class ArchiveJob: Sendable {
             // Exclusive rename commits atomically without overwriting even a dangling symlink.
             if renamex_np(archive.path, finalURL.path, UInt32(RENAME_EXCL)) == 0 { break }
             let code = errno
-            guard numberOnCollision && code == EEXIST else {
+            guard code == EEXIST else {
                 throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
             }
             number += 1
@@ -444,7 +418,6 @@ public final class ArchiveJob: Sendable {
         }
         let size = (try fm.attributesOfItem(atPath: finalURL.path)[.size] as? NSNumber)?.uint64Value ?? 0
         progress(.finished, 1)
-        return ArchiveResult(url: finalURL, originalBytes: snapshot.totalBytes, archiveBytes: size,
-                             elapsed: Date().timeIntervalSince(start), preset: preset)
+        return ArchiveResult(url: finalURL, originalBytes: snapshot.totalBytes, archiveBytes: size)
     }
 }
