@@ -141,6 +141,7 @@ public enum MemoryBudget {
 public final class ProcessRunner: @unchecked Sendable {
     private let lock = NSLock()
     private var active: Process?
+    private var stopping: Process?
     private var cancelled = false
     public init() {}
     public func checkCancellation() throws {
@@ -148,11 +149,24 @@ public final class ProcessRunner: @unchecked Sendable {
         if value { throw KkukError.cancelled }
     }
     public func cancel() {
-        lock.lock(); cancelled = true; let process = active; lock.unlock()
-        if let process, process.isRunning {
-            process.interrupt()
-            DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
-                if process.isRunning { process.terminate() }
+        lock.lock()
+        cancelled = true
+        if let process = active { stopLocked(process) }
+        lock.unlock()
+    }
+    // Called with lock held. Escalation belongs only to this active child process.
+    private func stopLocked(_ process: Process) {
+        guard active === process, stopping !== process, process.isRunning else { return }
+        stopping = process
+        process.interrupt()
+        for (delay, signal) in [(2.0, SIGTERM), (4.0, SIGKILL)] {
+            DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self else { return }
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                guard self.active === process, self.stopping === process, process.isRunning else { return }
+                // Never signal a replacement job or a process that has already exited.
+                _ = Darwin.kill(process.processIdentifier, signal)
             }
         }
     }
@@ -177,9 +191,12 @@ public final class ProcessRunner: @unchecked Sendable {
         lock.unlock()
         try? pipe.fileHandleForWriting.close()
         defer {
-            if process.isRunning { process.terminate(); process.waitUntilExit() }
+            lock.lock()
+            stopLocked(process)
+            lock.unlock()
+            if process.isRunning { process.waitUntilExit() }
             try? pipe.fileHandleForReading.close()
-            lock.lock(); active = nil; lock.unlock()
+            lock.lock(); active = nil; stopping = nil; lock.unlock()
         }
         var transcript = Data()
         var buffer = [UInt8](repeating: 0, count: 8192)
