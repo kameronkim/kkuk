@@ -24,6 +24,8 @@ final class AppModel: ObservableObject {
     private var cancellationRequested = false
     var onTaskFinished: (() -> Void)?
     var onArchiveSucceeded: (() -> Void)?
+    private var completionSound: NSSound?
+    private(set) var completionSoundEndsAt = Date.distantPast
 
     var engine: URL {
         Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/7zz")
@@ -102,6 +104,10 @@ final class AppModel: ObservableObject {
                     self.result = result; self.busy = false; self.job = nil; self.progress = nil
                     self.status = L10n.text("Compression and verification complete")
                     self.detail = Self.resultDetail(result)
+                    if let sound = NSSound(named: NSSound.Name("Glass")), sound.play() {
+                        self.completionSound = sound
+                        self.completionSoundEndsAt = Date().addingTimeInterval(sound.duration)
+                    }
                     self.onTaskFinished?()
                     self.onArchiveSucceeded?()
                 }
@@ -411,6 +417,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var closingProgress = false
     private var confirmingQuit = false
     private var waitingForTermination = false
+    private var completionQuitScheduled = false
     private var appIcon: NSImage?
     private var finderService: FinderCompressionService?
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -519,8 +526,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         ])
     }
     private func finishSuccessfulService() {
-        guard model.result != nil, !confirmingQuit, !waitingForTermination else { return }
-        closeProgressWindow()
+        guard model.result != nil, !confirmingQuit, !waitingForTermination, !completionQuitScheduled else { return }
+        completionQuitScheduled = true
+        model.acceptsNewInput = false
+        let delay = max(0, model.completionSoundEndsAt.timeIntervalSinceNow)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.closeProgressWindow()
+        }
     }
     func closeProgressWindow() {
         closingProgress = true
