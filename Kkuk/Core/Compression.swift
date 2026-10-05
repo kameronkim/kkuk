@@ -102,6 +102,7 @@ public enum InputScanner {
             // Unix sockets are live communication endpoints, not archive data.
             // Classify by filesystem type, preserving regular files and symbolic links.
             if type == .typeSocket {
+                guard url != folder else { throw KkukError.unsupportedInput(url.path) }
                 excludedPaths.append(path)
                 return
             }
