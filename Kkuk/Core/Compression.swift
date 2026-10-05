@@ -18,6 +18,12 @@ public struct InputEntry: Equatable, Sendable {
     public let modified: Date?
     public let linkTarget: String?
     public let isDirectory: Bool
+    public let deviceID: Int32
+    public let fileID: UInt64
+    // Unlike modification time, ordinary file operations cannot restore ctime.
+    // Keep its full precision so same-size writes and metadata restoration are detected.
+    public let changedSeconds: Int
+    public let changedNanoseconds: Int
 }
 
 public struct InputSnapshot: Sendable {
@@ -45,8 +51,19 @@ public enum InputScanner {
             guard !path.contains("\n"), !path.contains("\r") else {
                 throw KkukError.message("줄바꿈이 포함된 파일 이름은 현재 지원하지 않습니다: \(url.lastPathComponent)")
             }
-            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-            let type = attributes[.type] as? FileAttributeType
+            // Read type, identity and timestamps together without following symbolic links.
+            var metadata = stat()
+            guard lstat(url.path, &metadata) == 0 else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            }
+            let type: FileAttributeType
+            switch metadata.st_mode & mode_t(S_IFMT) {
+            case mode_t(S_IFDIR): type = .typeDirectory
+            case mode_t(S_IFREG): type = .typeRegular
+            case mode_t(S_IFLNK): type = .typeSymbolicLink
+            case mode_t(S_IFSOCK): type = .typeSocket
+            default: type = .typeUnknown
+            }
             // Unix sockets are live communication endpoints, not archive data.
             // Classify by filesystem type, preserving regular files and symbolic links.
             if type == .typeSocket {
@@ -58,9 +75,13 @@ public enum InputScanner {
             }
             let link = type == .typeSymbolicLink ? try FileManager.default.destinationOfSymbolicLink(atPath: url.path) : nil
             let entry = InputEntry(path: path,
-                                   size: type == .typeDirectory ? 0 : (attributes[.size] as? NSNumber)?.uint64Value ?? 0,
-                                   modified: attributes[.modificationDate] as? Date,
-                                   linkTarget: link, isDirectory: type == .typeDirectory)
+                                   size: type == .typeDirectory ? 0 : UInt64(max(0, metadata.st_size)),
+                                   modified: Date(timeIntervalSince1970: Double(metadata.st_mtimespec.tv_sec)
+                                       + Double(metadata.st_mtimespec.tv_nsec) / 1_000_000_000),
+                                   linkTarget: link, isDirectory: type == .typeDirectory,
+                                   deviceID: metadata.st_dev, fileID: metadata.st_ino,
+                                   changedSeconds: metadata.st_ctimespec.tv_sec,
+                                   changedNanoseconds: metadata.st_ctimespec.tv_nsec)
             entries.append(entry)
             if entry.isDirectory {
                 for child in try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)
