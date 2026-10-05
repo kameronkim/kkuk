@@ -37,7 +37,7 @@ public enum KkukError: LocalizedError {
 public struct InputEntry: Equatable, Sendable {
     public let path: String
     public let size: UInt64
-    public let modified: Date?
+    public let modified: Date
     public let linkTarget: String?
     public let isDirectory: Bool
     public let deviceID: Int32
@@ -133,7 +133,10 @@ public enum InputScanner {
 
 public struct CompressionPreset: Equatable, Sendable {
     public let dictionaryMiB: Int
-    public var estimatedMemoryBytes: UInt64 { UInt64(dictionaryMiB * 12 + 128) * 1_048_576 }
+    public var estimatedMemoryBytes: UInt64 { Self.memoryEstimate(dictionaryMiB: dictionaryMiB) }
+    private static func memoryEstimate(dictionaryMiB: Int) -> UInt64 {
+        UInt64(dictionaryMiB * 12 + 128) * 1_048_576
+    }
     public static func select(inputBytes: UInt64, memoryBudgetBytes: UInt64) -> CompressionPreset {
         let mib: UInt64 = 1_048_576
         let choices = [64, 128, 256, 512, 1024]
@@ -145,7 +148,7 @@ public struct CompressionPreset: Equatable, Sendable {
         case ...(16384 * mib): preferred = 512
         default: preferred = 1024
         }
-        let fitted = choices.last { $0 <= preferred && UInt64($0 * 12 + 128) * mib <= memoryBudgetBytes } ?? 64
+        let fitted = choices.last { $0 <= preferred && memoryEstimate(dictionaryMiB: $0) <= memoryBudgetBytes } ?? 64
         return CompressionPreset(dictionaryMiB: fitted)
     }
 }
@@ -292,7 +295,7 @@ struct CompressionProgressParser {
     }
 }
 
-public enum ArchiveStage: String, Sendable { case compressing, verifying, checkingContents, finished }
+public enum ArchiveStage: Equatable, Sendable { case compressing, verifying, checkingContents, finished }
 public struct ArchiveResult: Sendable {
     public let url: URL
     public let originalBytes: UInt64
