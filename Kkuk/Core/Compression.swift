@@ -2,11 +2,33 @@ import Foundation
 import Darwin
 
 public enum KkukError: LocalizedError {
-    case message(String)
+    case inputMissing
+    case systemRoot
+    case unsupportedFileName(String)
+    case unsupportedInput(String)
+    case engineUnavailable
+    case unsafeDestination
+    case insufficientMemory
+    case sourceChanged
+    case archiveContentsMismatch(missing: [String], extra: [String])
+    case engineFailed(status: Int32, details: String)
     case cancelled
+
     public var errorDescription: String? {
         switch self {
-        case .message(let text): return text
+        case .inputMissing: return "압축할 파일이나 폴더를 선택해 주세요."
+        case .systemRoot: return "시스템 루트 대신 압축할 파일이나 폴더를 선택해 주세요."
+        case .unsupportedFileName(let name): return "줄바꿈이 포함된 파일 이름은 현재 지원하지 않습니다: \(name)"
+        case .unsupportedInput(let path): return "일반 파일·폴더·심볼릭 링크만 압축할 수 있습니다: \(path)"
+        case .engineUnavailable: return "7-Zip 엔진을 찾을 수 없습니다. 앱을 다시 빌드해 주세요."
+        case .unsafeDestination: return "원본을 개인 폴더로 옮긴 뒤 다시 시도해 주세요."
+        case .insufficientMemory: return "지금은 압축에 사용할 메모리 여유가 부족합니다. 다른 작업을 닫은 뒤 파일이나 폴더를 다시 선택해 주세요."
+        case .sourceChanged: return "압축하는 동안 원본 파일이나 폴더가 변경됐습니다. 작업을 마친 뒤 다시 압축해 주세요."
+        case .archiveContentsMismatch(let missing, let extra):
+            return "압축 파일에 포함된 항목이 원본 목록과 다릅니다. 결과 파일을 확정하지 않았습니다.\n누락: \(missing.joined(separator: "\n"))\n추가: \(extra.joined(separator: "\n"))"
+        case .engineFailed(let status, let details):
+            let reason = status == 1 ? "일부 파일을 읽지 못했습니다." : "압축 엔진 작업에 실패했습니다."
+            return "\(reason) (코드 \(status))\n\(details)"
         case .cancelled: return "압축을 취소했습니다."
         }
     }
@@ -15,7 +37,7 @@ public enum KkukError: LocalizedError {
 public struct InputEntry: Equatable, Sendable {
     public let path: String
     public let size: UInt64
-    public let modified: Date?
+    public let modified: Date
     public let linkTarget: String?
     public let isDirectory: Bool
     public let deviceID: Int32
@@ -30,26 +52,40 @@ public struct InputSnapshot: Sendable {
     public let input: URL
     public let entries: [InputEntry]
     public let excludedPaths: [String]
-    public var isDirectory: Bool { entries.first { $0.path == input.lastPathComponent }?.isDirectory ?? false }
-    public var totalBytes: UInt64 { entries.filter { !$0.isDirectory }.reduce(0) { $0 + $1.size } }
-    public var fileCount: Int { entries.filter { !$0.isDirectory }.count }
+    public let isDirectory: Bool
+    public let totalBytes: UInt64
+    public let fileCount: Int
+
+    init(input: URL, entries: [InputEntry], excludedPaths: [String]) {
+        self.input = input
+        self.entries = entries
+        self.excludedPaths = excludedPaths
+        self.isDirectory = entries.first { $0.path == input.lastPathComponent }?.isDirectory ?? false
+        var bytes: UInt64 = 0
+        var count = 0
+        for entry in entries where !entry.isDirectory {
+            bytes += entry.size
+            count += 1
+        }
+        self.totalBytes = bytes
+        self.fileCount = count
+    }
     public var archivePaths: Set<String> { Set(entries.map(\.path)) }
 }
 
 public enum InputScanner {
     public static func scan(_ input: URL, checkCancellation: () throws -> Void = {}) throws -> InputSnapshot {
         let folder = input.standardizedFileURL.resolvingSymlinksInPath()
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory) else {
-            throw KkukError.message("압축할 파일이나 폴더를 선택해 주세요.")
+        guard FileManager.default.fileExists(atPath: folder.path) else {
+            throw KkukError.inputMissing
         }
-        guard folder.path != "/" else { throw KkukError.message("시스템 루트 대신 압축할 파일이나 폴더를 선택해 주세요.") }
+        guard folder.path != "/" else { throw KkukError.systemRoot }
         var entries: [InputEntry] = []
         var excludedPaths: [String] = []
         func visit(_ url: URL, path: String) throws {
             try checkCancellation()
             guard !path.contains("\n"), !path.contains("\r") else {
-                throw KkukError.message("줄바꿈이 포함된 파일 이름은 현재 지원하지 않습니다: \(url.lastPathComponent)")
+                throw KkukError.unsupportedFileName(url.lastPathComponent)
             }
             // Read type, identity and timestamps together without following symbolic links.
             var metadata = stat()
@@ -67,11 +103,12 @@ public enum InputScanner {
             // Unix sockets are live communication endpoints, not archive data.
             // Classify by filesystem type, preserving regular files and symbolic links.
             if type == .typeSocket {
+                guard url != folder else { throw KkukError.unsupportedInput(url.path) }
                 excludedPaths.append(path)
                 return
             }
             guard type == .typeDirectory || type == .typeRegular || type == .typeSymbolicLink else {
-                throw KkukError.message("일반 파일·폴더·심볼릭 링크만 압축할 수 있습니다: \(path)")
+                throw KkukError.unsupportedInput(path)
             }
             let link = type == .typeSymbolicLink ? try FileManager.default.destinationOfSymbolicLink(atPath: url.path) : nil
             let entry = InputEntry(path: path,
@@ -84,8 +121,7 @@ public enum InputScanner {
                                    changedNanoseconds: metadata.st_ctimespec.tv_nsec)
             entries.append(entry)
             if entry.isDirectory {
-                for child in try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)
-                    .sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+                for child in try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil) {
                     try visit(child, path: path + "/" + child.lastPathComponent)
                 }
             }
@@ -96,10 +132,11 @@ public enum InputScanner {
 }
 
 public struct CompressionPreset: Equatable, Sendable {
-    public let name: String
     public let dictionaryMiB: Int
-    public let memoryAdjusted: Bool
-    public var estimatedMemoryBytes: UInt64 { UInt64(dictionaryMiB * 12 + 128) * 1_048_576 }
+    public var estimatedMemoryBytes: UInt64 { Self.memoryEstimate(dictionaryMiB: dictionaryMiB) }
+    private static func memoryEstimate(dictionaryMiB: Int) -> UInt64 {
+        UInt64(dictionaryMiB * 12 + 128) * 1_048_576
+    }
     public static func select(inputBytes: UInt64, memoryBudgetBytes: UInt64) -> CompressionPreset {
         let mib: UInt64 = 1_048_576
         let choices = [64, 128, 256, 512, 1024]
@@ -111,9 +148,8 @@ public struct CompressionPreset: Equatable, Sendable {
         case ...(16384 * mib): preferred = 512
         default: preferred = 1024
         }
-        let fitted = choices.last { $0 <= preferred && UInt64($0 * 12 + 128) * mib <= memoryBudgetBytes } ?? 64
-        let names = [64: "소형 고압축", 128: "일반 고압축", 256: "대형 고압축", 512: "초대형 고압축", 1024: "극대형 고압축"]
-        return CompressionPreset(name: names[fitted]!, dictionaryMiB: fitted, memoryAdjusted: fitted < preferred)
+        let fitted = choices.last { $0 <= preferred && memoryEstimate(dictionaryMiB: $0) <= memoryBudgetBytes } ?? 64
+        return CompressionPreset(dictionaryMiB: fitted)
     }
 }
 
@@ -171,15 +207,21 @@ public final class ProcessRunner: @unchecked Sendable {
         }
     }
     public func run(executable: URL, arguments: [String], directory: URL? = nil,
-                    output: (String) -> Void = { _ in }) throws -> String {
+                    output: (Data) -> Void = { _ in }) throws {
         try checkCancellation()
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
         process.currentDirectoryURL = directory
-        var environment = ProcessInfo.processInfo.environment
-        environment["LC_ALL"] = "en_US.UTF-8"
-        process.environment = environment
+        // The engine needs locale and standard filesystem locations, not the app's
+        // secrets, loader settings, or custom executable search paths.
+        process.environment = [
+            "LC_ALL": "en_US.UTF-8",
+            "LANG": "en_US.UTF-8",
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "HOME": NSHomeDirectory(),
+            "TMPDIR": FileManager.default.temporaryDirectory.path
+        ]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
@@ -213,16 +255,17 @@ public final class ProcessRunner: @unchecked Sendable {
             }
             let chunk = Data(buffer.prefix(count))
             transcript.append(chunk)
-            output(String(decoding: chunk, as: UTF8.self))
+            if transcript.count > 8192 {
+                transcript = Data(transcript.suffix(8192))
+            }
+            output(chunk)
         }
         process.waitUntilExit()
         try checkCancellation()
-        let text = String(decoding: transcript, as: UTF8.self)
         guard process.terminationStatus == 0 else {
-            let reason = process.terminationStatus == 1 ? "일부 파일을 읽지 못했습니다." : "압축 엔진 작업에 실패했습니다."
-            throw KkukError.message("\(reason) (코드 \(process.terminationStatus))\n\(text.suffix(1400))")
+            let text = String(decoding: transcript, as: UTF8.self)
+            throw KkukError.engineFailed(status: process.terminationStatus, details: String(text.suffix(1400)))
         }
-        return text
     }
 }
 
@@ -231,9 +274,9 @@ struct CompressionProgressParser {
     private var boundary = true
     private var digits = 0
     private var value = 0
-    mutating func consume(_ chunk: String) -> Double? {
+    mutating func consume(_ chunk: Data) -> Double? {
         var latest: Double?
-        for byte in chunk.utf8 {
+        for byte in chunk {
             if byte >= 48 && byte <= 57, boundary || digits > 0 {
                 if digits < 3 {
                     value = value * 10 + Int(byte - 48)
@@ -252,13 +295,46 @@ struct CompressionProgressParser {
     }
 }
 
-public enum ArchiveStage: String, Sendable { case compressing, verifying, checkingContents, finished }
+public enum ArchiveStage: Equatable, Sendable { case compressing, verifying, checkingContents, finished }
 public struct ArchiveResult: Sendable {
     public let url: URL
     public let originalBytes: UInt64
     public let archiveBytes: UInt64
-    public let elapsed: TimeInterval
-    public let preset: CompressionPreset
+}
+
+// Decode only complete LF-delimited records so UTF-8 names survive split pipe reads.
+// Non-path records are discarded as soon as their prefix is known.
+struct ArchivePathParser {
+    private var pending = Data()
+    private var discarding = false
+    private var paths: Set<String> = []
+    private let prefix = Data("Path = ".utf8)
+
+    mutating func consume(_ chunk: Data) {
+        for byte in chunk {
+            if byte == 10 {
+                finishLine()
+            } else if !discarding {
+                pending.append(byte)
+                if pending.count == prefix.count && pending != prefix {
+                    pending.removeAll(keepingCapacity: true)
+                    discarding = true
+                }
+            }
+        }
+    }
+    private mutating func finishLine() {
+        if !discarding, pending.starts(with: prefix) {
+            if pending.last == 13 { pending.removeLast() }
+            paths.insert(String(decoding: pending.dropFirst(prefix.count), as: UTF8.self))
+        }
+        pending.removeAll(keepingCapacity: true)
+        discarding = false
+    }
+    mutating func finish() -> Set<String> {
+        finishLine()
+        return paths
+    }
 }
 
 public final class ArchiveJob: Sendable {
@@ -266,65 +342,6 @@ public final class ArchiveJob: Sendable {
     public let engine: URL
     public init(engine: URL) { self.engine = engine }
     public func cancel() { runner.cancel() }
-    public static func validateDestination(_ destination: URL, source: URL, requireAvailable: Bool = true) throws {
-        let parent = destination.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
-        let root = source.resolvingSymlinksInPath().standardizedFileURL
-        guard parent.path != root.path, !parent.path.hasPrefix(root.path + "/") else {
-            throw KkukError.message("압축 결과는 원본 폴더 바깥에 저장해 주세요.")
-        }
-        guard destination.pathExtension.lowercased() == "7z" else { throw KkukError.message("저장 파일의 확장자는 .7z여야 합니다.") }
-        guard !requireAvailable || (try? FileManager.default.attributesOfItem(atPath: destination.path)) == nil else {
-            throw KkukError.message("같은 이름의 파일이 있습니다. 다른 이름으로 저장해 주세요.")
-        }
-    }
-    public static func listedPaths(_ text: String) -> Set<String> {
-        // 7-Zip separates records with LF (or CRLF), not Unicode filename characters.
-        // CR and LF inside source names are rejected by InputScanner.
-        Set(text.components(separatedBy: "\n").compactMap { line in
-            let record = line.hasSuffix("\r") ? String(line.dropLast()) : line
-            return record.hasPrefix("Path = ") ? String(record.dropFirst(7)) : nil
-        })
-    }
-    private static func restrictAccess(to url: URL, directory: Bool) throws {
-        // Change the opened object, never a symlink target substituted at this path.
-        let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
-            | (directory ? O_DIRECTORY : 0))
-        guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
-        defer { close(descriptor) }
-        var metadata = stat()
-        guard fstat(descriptor, &metadata) == 0 else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
-        }
-        let expectedType = mode_t(directory ? S_IFDIR : S_IFREG)
-        guard metadata.st_mode & mode_t(S_IFMT) == expectedType else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(EINVAL))
-        }
-        // Mode bits alone do not remove inherited grants on macOS.
-        guard let acl = acl_init(0) else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
-        defer { acl_free(UnsafeMutableRawPointer(acl)) }
-        if acl_set_fd(descriptor, acl) != 0 {
-            let code = errno
-            // Filesystems without extended ACLs can still enforce POSIX permissions.
-            guard code == ENOTSUP else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(code)) }
-        }
-        let permissions: mode_t = directory ? 0o700 : 0o600
-        guard fchmod(descriptor, permissions) == 0 else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
-        }
-        guard fstat(descriptor, &metadata) == 0 else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
-        }
-        guard metadata.st_mode & 0o777 == permissions else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES))
-        }
-    }
-    private static func nameLimit(in directory: URL) throws -> Int {
-        errno = 0
-        let limit = pathconf(directory.path, _PC_NAME_MAX)
-        let code = errno
-        if limit < 0 && code != 0 { throw NSError(domain: NSPOSIXErrorDomain, code: Int(code)) }
-        return limit > 0 ? Int(limit) : 255
-    }
     private static func numberedDestination(_ destination: URL, number: Int, nameLimit: Int) throws -> URL {
         let suffix = (number == 1 ? "" : " (\(number))") + "." + destination.pathExtension
         let budget = nameLimit - suffix.utf8.count
@@ -363,73 +380,97 @@ public final class ArchiveJob: Sendable {
                                    progress: (ArchiveStage, Double?) -> Void = { _, _ in }) throws -> ArchiveResult {
         let destination = snapshot.input.deletingLastPathComponent()
             .appendingPathComponent(snapshot.input.lastPathComponent + ".7z")
-        return try execute(snapshot: snapshot, preset: preset, destination: destination,
-                           numberOnCollision: true, progress: progress)
-    }
-    public func execute(snapshot: InputSnapshot, preset: CompressionPreset, destination: URL,
-                        numberOnCollision: Bool = false,
-                        progress: (ArchiveStage, Double?) -> Void = { _, _ in }) throws -> ArchiveResult {
         let fm = FileManager.default
-        let start = Date()
-        let nameLimit = numberOnCollision ? try Self.nameLimit(in: destination.deletingLastPathComponent()) : 0
-        let initialDestination = numberOnCollision
-            ? try Self.numberedDestination(destination, number: 1, nameLimit: nameLimit) : destination
-        try Self.validateDestination(initialDestination, source: snapshot.input, requireAvailable: !numberOnCollision)
-        guard fm.isExecutableFile(atPath: engine.path) else { throw KkukError.message("7-Zip 엔진을 찾을 수 없습니다. 앱을 다시 빌드해 주세요.") }
+        let parent = try PinnedDestinationDirectory(destination.deletingLastPathComponent())
+        let nameLimit = try ArchiveFileAccess.nameLimit(directoryDescriptor: parent.descriptor)
+        let initialDestination = try Self.numberedDestination(destination, number: 1, nameLimit: nameLimit)
+        guard fm.isExecutableFile(atPath: engine.path) else { throw KkukError.engineUnavailable }
         guard preset.estimatedMemoryBytes <= MemoryBudget.current() else {
-            throw KkukError.message("지금은 압축에 사용할 메모리 여유가 부족합니다. 다른 작업을 닫은 뒤 파일이나 폴더를 다시 선택해 주세요.")
+            throw KkukError.insufficientMemory
         }
-        let temporary = destination.deletingLastPathComponent().appendingPathComponent(".kkuk-\(UUID().uuidString)", isDirectory: true)
-        try fm.createDirectory(at: temporary, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        defer { try? fm.removeItem(at: temporary) }
-        try Self.restrictAccess(to: temporary, directory: true)
+        let temporaryName = ".kkuk-\(UUID().uuidString)"
+        let temporary = parent.url.appendingPathComponent(temporaryName, isDirectory: true)
+        guard mkdirat(parent.descriptor, temporaryName, 0o700) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        let temporaryDescriptor = openat(parent.descriptor, temporaryName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard temporaryDescriptor >= 0 else {
+            let code = errno
+            _ = unlinkat(parent.descriptor, temporaryName, AT_REMOVEDIR)
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+        }
+        defer { parent.removeTemporary(temporaryDescriptor, name: temporaryName); close(temporaryDescriptor) }
+        try ArchiveFileAccess.restrictAccess(descriptor: temporaryDescriptor, directory: true)
+        try parent.verify()
         let archive = temporary.appendingPathComponent("result.7z")
         // Explicit solid limit covers this input; two threads avoid independent block parallelism.
         let solidBytes = max(snapshot.totalBytes + 1_073_741_824, 1_073_741_824)
-        let exclusions = snapshot.excludedPaths.map { "-x!" + $0 }
+        var exclusions: [String] = []
+        if !snapshot.excludedPaths.isEmpty {
+            // Keep the process argument count constant even for thousands of sockets.
+            // Outer quotes preserve leading/trailing spaces and literal quotes in names.
+            let list = temporary.appendingPathComponent("excluded-paths.txt")
+            let contents = snapshot.excludedPaths.map { "\"" + $0 + "\"" }.joined(separator: "\n") + "\n"
+            try ArchiveFileAccess.writePrivateList(contents, directoryDescriptor: temporaryDescriptor)
+            exclusions = ["-scsUTF-8", "-x@" + list.path]
+        }
         let args = ["a", "-t7z", "-m0=lzma2", "-mx=9", "-md=\(preset.dictionaryMiB)m",
                     "-mfb=273", "-ms=\(solidBytes)b", "-mmt=2", "-mqs=on", "-sse", "-snl", "-ssp", "-spd",
                     "-sccUTF-8", "-bb0", "-bsp1", "-y"] + exclusions + ["--", archive.path, "./" + snapshot.input.lastPathComponent]
         progress(.compressing, 0)
+        try parent.verify()
         var progressParser = CompressionProgressParser()
-        _ = try runner.run(executable: engine, arguments: args, directory: snapshot.input.deletingLastPathComponent()) { chunk in
+        try runner.run(executable: engine, arguments: args, directory: snapshot.input.deletingLastPathComponent(), output: { chunk in
             if let value = progressParser.consume(chunk) { progress(.compressing, value) }
-        }
+        })
         progress(.verifying, nil)
-        _ = try runner.run(executable: engine, arguments: ["t", "-sccUTF-8", "-bsp0", "--", archive.path])
+        try parent.verify()
+        try runner.run(executable: engine, arguments: ["t", "-sccUTF-8", "-bsp0", "--", archive.path])
         progress(.checkingContents, nil)
-        let listing = try runner.run(executable: engine, arguments: ["l", "-slt", "-ba", "-sccUTF-8", "--", archive.path])
-        let actualPaths = Self.listedPaths(listing)
-        guard actualPaths == snapshot.archivePaths else {
-            let missing = snapshot.archivePaths.subtracting(actualPaths).sorted().prefix(3).joined(separator: "\n")
-            let extra = actualPaths.subtracting(snapshot.archivePaths).sorted().prefix(3).joined(separator: "\n")
-            throw KkukError.message("압축 파일에 포함된 항목이 원본 목록과 다릅니다. 결과 파일을 확정하지 않았습니다.\n누락: \(missing)\n추가: \(extra)")
+        try parent.verify()
+        var pathParser = ArchivePathParser()
+        try runner.run(executable: engine, arguments: ["l", "-slt", "-ba", "-sccUTF-8", "--", archive.path],
+                           output: { pathParser.consume($0) })
+        let actualPaths = pathParser.finish()
+        let expectedPaths = snapshot.archivePaths
+        guard actualPaths == expectedPaths else {
+            let missing = Array(expectedPaths.subtracting(actualPaths).sorted().prefix(3))
+            let extra = Array(actualPaths.subtracting(expectedPaths).sorted().prefix(3))
+            throw KkukError.archiveContentsMismatch(missing: missing, extra: extra)
         }
+        try parent.verify()
         let current = try InputScanner.scan(snapshot.input) { try self.runner.checkCancellation() }
         guard current.entries == snapshot.entries else {
-            throw KkukError.message("압축하는 동안 원본 파일이나 폴더가 변경됐습니다. 작업을 마친 뒤 다시 압축해 주세요.")
+            throw KkukError.sourceChanged
         }
         try runner.checkCancellation()
-        if !numberOnCollision { try Self.validateDestination(destination, source: snapshot.input) }
         // Establish private permissions before publishing the file with an exclusive rename.
-        try Self.restrictAccess(to: archive, directory: false)
+        try parent.verify()
+        let archiveDescriptor = openat(temporaryDescriptor, "result.7z", O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard archiveDescriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        defer { close(archiveDescriptor) }
+        try ArchiveFileAccess.restrictAccess(descriptor: archiveDescriptor, directory: false)
+        var archiveMetadata = stat()
+        guard fstat(archiveDescriptor, &archiveMetadata) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        let size = UInt64(max(0, archiveMetadata.st_size))
         var finalURL = initialDestination
         var number = 1
         while true {
             try runner.checkCancellation()
             // Exclusive rename commits atomically without overwriting even a dangling symlink.
-            if renamex_np(archive.path, finalURL.path, UInt32(RENAME_EXCL)) == 0 { break }
+            try parent.verify()
+            if renameatx_np(temporaryDescriptor, "result.7z", parent.descriptor, finalURL.lastPathComponent, UInt32(RENAME_EXCL)) == 0 { break }
             let code = errno
-            guard numberOnCollision && code == EEXIST else {
+            guard code == EEXIST else {
                 throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
             }
             number += 1
             // Always shorten the original base again, reserving space for the full suffix.
             finalURL = try Self.numberedDestination(destination, number: number, nameLimit: nameLimit)
         }
-        let size = (try fm.attributesOfItem(atPath: finalURL.path)[.size] as? NSNumber)?.uint64Value ?? 0
         progress(.finished, 1)
-        return ArchiveResult(url: finalURL, originalBytes: snapshot.totalBytes, archiveBytes: size,
-                             elapsed: Date().timeIntervalSince(start), preset: preset)
+        return ArchiveResult(url: finalURL, originalBytes: snapshot.totalBytes, archiveBytes: size)
     }
 }

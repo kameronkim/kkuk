@@ -1,7 +1,6 @@
 "%.1f%% smaller" = "%.1f%% 작아짐";
 "%@ · %@ file" = "%@ · 파일 %@개";
 "%@ · %@ files" = "%@ · 파일 %@개";
-"A file with that name already exists. Choose another name." = "같은 이름의 파일이 있습니다. 다른 이름으로 저장해 주세요.";
 "About Kkuk" = "꾹에 관하여";
 "Applied automatically" = "선택하면 자동 적용";
 "Based on input size and available memory." = "입력 크기와 메모리 여유에 맞춰 설정합니다.";
@@ -55,12 +54,11 @@
 "Ready to compress" = "압축 준비 완료";
 "Reinstall the app, then try again." = "앱을 다시 설치한 뒤 시도해 주세요.";
 "Rename files containing line breaks, then choose the input again." = "줄바꿈이 포함된 파일 이름을 바꾼 뒤 다시 선택해 주세요.";
-"Save the archive outside the source folder." = "압축 결과는 원본 폴더 바깥에 저장해 주세요.";
-"Save using a different name." = "다른 이름으로 저장해 주세요.";
 "Show in Finder" = "Finder에서 보기";
 "Size increased slightly" = "크기가 조금 늘었습니다";
 "Small high compression" = "소형 고압축";
 "Standard high compression" = "일반 고압축";
 "The original will be kept. Temporary archives will be removed before quitting." = "원본은 유지됩니다. 압축 중이었다면 임시 파일을 정리한 뒤 종료합니다.";
-"Use the .7z extension for the archive." = "저장 파일의 확장자는 .7z여야 합니다.";
 "Verifying archive" = "압축 파일 검사 중";
+
+"Move the source to a private folder, then try again." = "원본을 개인 폴더로 옮긴 뒤 다시 시도해 주세요.";
