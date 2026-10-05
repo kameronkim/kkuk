@@ -230,6 +230,47 @@ public final class ArchiveJob: Sendable {
             return record.hasPrefix("Path = ") ? String(record.dropFirst(7)) : nil
         })
     }
+    private static func nameLimit(in directory: URL) throws -> Int {
+        errno = 0
+        let limit = pathconf(directory.path, _PC_NAME_MAX)
+        let code = errno
+        if limit < 0 && code != 0 { throw NSError(domain: NSPOSIXErrorDomain, code: Int(code)) }
+        return limit > 0 ? Int(limit) : 255
+    }
+    private static func numberedDestination(_ destination: URL, number: Int, nameLimit: Int) throws -> URL {
+        let suffix = (number == 1 ? "" : " (\(number))") + "." + destination.pathExtension
+        let budget = nameLimit - suffix.utf8.count
+        guard budget > 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENAMETOOLONG)) }
+        let base = destination.deletingPathExtension().lastPathComponent
+        var stem = ""
+        var bytes = 0
+        var units = 0
+        // Honor both byte and UTF-16 limits conservatively across destination filesystems.
+        // Keep whole characters, including composed characters and emoji, where possible.
+        for character in base {
+            let part = String(character)
+            guard bytes + part.utf8.count <= budget, units + part.utf16.count <= budget else { break }
+            stem += part
+            bytes += part.utf8.count
+            units += part.utf16.count
+        }
+        // One unusually long composed character may exceed the entire budget.
+        // A scalar prefix still forms valid Unicode and guarantees progress on collisions.
+        if stem.isEmpty {
+            for scalar in base.unicodeScalars {
+                let part = String(scalar)
+                guard bytes + part.utf8.count <= budget, units + part.utf16.count <= budget else { break }
+                stem += part
+                bytes += part.utf8.count
+                units += part.utf16.count
+            }
+        }
+        if stem != base {
+            while stem.count > 1 && (stem.hasSuffix(".") || stem.hasSuffix(" ")) { stem.removeLast() }
+        }
+        guard !stem.isEmpty else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENAMETOOLONG)) }
+        return destination.deletingLastPathComponent().appendingPathComponent(stem + suffix)
+    }
     public func executeBesideInput(snapshot: InputSnapshot, preset: CompressionPreset,
                                    progress: (ArchiveStage, Double?) -> Void = { _, _ in }) throws -> ArchiveResult {
         let destination = snapshot.input.deletingLastPathComponent()
@@ -242,7 +283,10 @@ public final class ArchiveJob: Sendable {
                         progress: (ArchiveStage, Double?) -> Void = { _, _ in }) throws -> ArchiveResult {
         let fm = FileManager.default
         let start = Date()
-        try Self.validateDestination(destination, source: snapshot.input, requireAvailable: !numberOnCollision)
+        let nameLimit = numberOnCollision ? try Self.nameLimit(in: destination.deletingLastPathComponent()) : 0
+        let initialDestination = numberOnCollision
+            ? try Self.numberedDestination(destination, number: 1, nameLimit: nameLimit) : destination
+        try Self.validateDestination(initialDestination, source: snapshot.input, requireAvailable: !numberOnCollision)
         guard fm.isExecutableFile(atPath: engine.path) else { throw KkukError.message("7-Zip 엔진을 찾을 수 없습니다. 앱을 다시 빌드해 주세요.") }
         guard preset.estimatedMemoryBytes <= MemoryBudget.current() else {
             throw KkukError.message("지금은 압축에 사용할 메모리 여유가 부족합니다. 다른 작업을 닫은 뒤 파일이나 폴더를 다시 선택해 주세요.")
@@ -282,7 +326,7 @@ public final class ArchiveJob: Sendable {
         }
         try runner.checkCancellation()
         if !numberOnCollision { try Self.validateDestination(destination, source: snapshot.input) }
-        var finalURL = destination
+        var finalURL = initialDestination
         var number = 1
         while true {
             try runner.checkCancellation()
@@ -293,8 +337,8 @@ public final class ArchiveJob: Sendable {
                 throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
             }
             number += 1
-            finalURL = destination.deletingLastPathComponent().appendingPathComponent(
-                destination.deletingPathExtension().lastPathComponent + " (\(number)).7z")
+            // Always shorten the original base again, reserving space for the full suffix.
+            finalURL = try Self.numberedDestination(destination, number: number, nameLimit: nameLimit)
         }
         let size = (try fm.attributesOfItem(atPath: finalURL.path)[.size] as? NSNumber)?.uint64Value ?? 0
         progress(.finished, 1)
