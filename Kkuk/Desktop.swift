@@ -14,6 +14,7 @@ final class AppModel: ObservableObject {
     @Published var snapshot: InputSnapshot?
     @Published var preset: CompressionPreset?
     @Published var busy = false
+    @Published var acceptsNewInput = true
     @Published var status = ""
     @Published var detail = ""
     @Published var progress: Double?
@@ -22,12 +23,13 @@ final class AppModel: ObservableObject {
     private var job: ArchiveJob?
     private var cancellationRequested = false
     var onTaskFinished: (() -> Void)?
+    var onArchiveSucceeded: (() -> Void)?
 
     var engine: URL {
         Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/7zz")
     }
     func chooseInput() {
-        guard !busy else { return }
+        guard !busy, acceptsNewInput else { return }
         let panel = NSOpenPanel()
         panel.title = L10n.text("Choose a file or folder to compress")
         panel.prompt = L10n.text("Choose")
@@ -36,8 +38,8 @@ final class AppModel: ObservableObject {
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url { analyze(url) }
     }
-    func analyze(_ folder: URL) {
-        guard !busy else { return }
+    func analyze(_ folder: URL, compressWhenReady: Bool = false) {
+        guard !busy, acceptsNewInput else { return }
         selectedInput = folder
         selectedIsDirectory = (try? folder.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
         scanning = true
@@ -63,6 +65,7 @@ final class AppModel: ObservableObject {
                     self.selectedInput = scanned.input; self.selectedIsDirectory = scanned.isDirectory
                     self.status = L10n.text("Ready to compress")
                     self.detail = ""
+                    if compressWhenReady { self.start() }
                 }
             } catch {
                 DispatchQueue.main.async { self.fail(error) }
@@ -100,6 +103,7 @@ final class AppModel: ObservableObject {
                     self.status = L10n.text("Compression and verification complete")
                     self.detail = Self.resultDetail(result)
                     self.onTaskFinished?()
+                    self.onArchiveSucceeded?()
                 }
             } catch {
                 DispatchQueue.main.async { self.fail(error) }
@@ -300,7 +304,7 @@ struct CompressionView: View {
                     .overlay { if focusedControl == .target { Rectangle().stroke(KkukTheme.accent, lineWidth: 2) } }
                     .contentShape(Rectangle())
                     .opacity(model.busy && !model.scanning ? 0.7 : 1)
-            }.buttonStyle(InputRowStyle()).disabled(model.busy)
+            }.buttonStyle(InputRowStyle()).disabled(model.busy || !model.acceptsNewInput)
                 .focusable()
                 .focused($focusedControl, equals: .target)
                 .onHover { targetHovered = $0 }
@@ -324,7 +328,7 @@ struct CompressionView: View {
             .foregroundStyle(KkukTheme.text).background(KkukTheme.background)
             .preferredColorScheme(.dark)
             .onDrop(of: [UTType.fileURL.identifier], isTargeted: $dragging) { providers in
-                guard !model.busy, providers.count == 1, let provider = providers.first else { return false }
+                guard !model.busy, model.acceptsNewInput, providers.count == 1, let provider = providers.first else { return false }
                 provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
                     let url: URL?
                     if let data = item as? Data { url = URL(dataRepresentation: data, relativeTo: nil) }
@@ -369,7 +373,7 @@ struct CompressionView: View {
                         Button(L10n.text("Show in Finder"), action: model.reveal).buttonStyle(QuietActionStyle(focused: focusedControl == .operation))
                     } else {
                         Button(L10n.text("Compress"), action: model.start).buttonStyle(QuietActionStyle(focused: focusedControl == .operation))
-                            .disabled(model.snapshot == nil || model.busy).keyboardShortcut(.defaultAction)
+                            .disabled(model.snapshot == nil || model.busy || !model.acceptsNewInput).keyboardShortcut(.defaultAction)
                     }
                 }.focusable().focused($focusedControl, equals: .operation).frame(width: 112, alignment: .trailing)
             }.frame(height: 54, alignment: .top)
@@ -403,21 +407,18 @@ struct CompressionView: View {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let model = AppModel()
     private var window: NSWindow?
+    private var progressWindow: NSWindow?
+    private var closingProgress = false
+    private var confirmingQuit = false
+    private var waitingForTermination = false
+    private var appIcon: NSImage?
+    private var finderService: FinderCompressionService?
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
            let icon = NSImage(contentsOf: url) {
+            appIcon = icon
             NSApplication.shared.applicationIconImage = icon
         }
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 400),
-                              styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = L10n.text("Kkuk")
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.backgroundColor = NSColor(KkukTheme.background)
-        window.contentView = NSHostingView(rootView: CompressionView(model: model))
-        window.isReleasedWhenClosed = false
-        window.delegate = self
-        window.center(); window.makeKeyAndOrderFront(nil)
-        self.window = window
         let menu = NSMenu()
         let item = NSMenuItem(); menu.addItem(item)
         let appMenu = NSMenu()
@@ -430,9 +431,86 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         fileMenu.addItem(withTitle: L10n.text("Choose File or Folder…"), action: #selector(openInput), keyEquivalent: "o")
         fileItem.submenu = fileMenu
         NSApplication.shared.mainMenu = menu
-        NSApplication.shared.activate(ignoringOtherApps: true)
+        let service = FinderCompressionService(model: model) { [weak self] isNewRequest in self?.showServiceWindow(isNewRequest: isNewRequest) }
+        finderService = service
+        NSApplication.shared.servicesProvider = service
+        // Services launch in the background; show their progress window only after receiving input.
+        if (notification.userInfo?[NSApplication.launchIsDefaultUserInfoKey] as? Bool) ?? true {
+            showMainWindow()
+        }
     }
-    @objc func openInput() { model.chooseInput() }
+    private func present(_ window: NSWindow) {
+        window.deminiaturize(nil)
+        window.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        // Leave controls unfocused until the user navigates with the keyboard.
+        window.makeFirstResponder(nil)
+    }
+    func showMainWindow() {
+        model.onArchiveSucceeded = nil
+        if window == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 400),
+                                  styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+            window.title = L10n.text("Kkuk")
+            window.appearance = NSAppearance(named: .darkAqua)
+            window.backgroundColor = NSColor(KkukTheme.background)
+            window.contentView = NSHostingView(rootView: CompressionView(model: model))
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            window.center()
+            self.window = window
+        }
+        progressWindow?.orderOut(nil)
+        if let window { present(window) }
+    }
+    func showServiceWindow(isNewRequest: Bool) {
+        if !isNewRequest {
+            if let progressWindow, progressWindow.isVisible || progressWindow.isMiniaturized { present(progressWindow) }
+            else if let window { present(window) }
+            return
+        }
+        model.onArchiveSucceeded = { [weak self] in self?.finishSuccessfulService() }
+        if progressWindow == nil {
+            let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: FinderProgressView.height(hasError: false)),
+                                 styleMask: [.titled, .closable, .miniaturizable],
+                                 backing: .buffered, defer: false)
+            panel.title = L10n.text("Kkuk")
+            panel.titleVisibility = .hidden
+            panel.titlebarAppearsTransparent = true
+            panel.appearance = NSAppearance(named: .darkAqua)
+            panel.backgroundColor = NSColor(KkukTheme.background)
+            let hostingView = NSHostingView(rootView: FinderProgressView(model: model, close: { [weak self] in self?.closeProgressWindow() }, resize: { [weak self] hasError in self?.resizeProgressWindow(hasError: hasError) }))
+            hostingView.sizingOptions = []
+            panel.contentView = hostingView
+            panel.isReleasedWhenClosed = false
+            panel.delegate = self
+            var frame = panel.frame
+            frame.size.height = panel.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 440, height: FinderProgressView.height(hasError: false))).height
+            panel.setFrame(frame, display: false)
+            panel.center()
+            progressWindow = panel
+        }
+        window?.orderOut(nil)
+        if let progressWindow { present(progressWindow) }
+    }
+    private func resizeProgressWindow(hasError: Bool) {
+        guard let progressWindow else { return }
+        var frame = progressWindow.frame
+        let height = progressWindow.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 440, height: FinderProgressView.height(hasError: hasError))).height
+        frame.origin.y = frame.maxY - height
+        frame.size.height = height
+        progressWindow.setFrame(frame, display: true)
+    }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if model.busy { showServiceWindow(isNewRequest: false) }
+        else { showMainWindow() }
+        return false
+    }
+    @objc func openInput() {
+        guard !model.busy, model.acceptsNewInput else { showServiceWindow(isNewRequest: false); return }
+        showMainWindow()
+        model.chooseInput()
+    }
     @objc func about() {
         NSApplication.shared.orderFrontStandardAboutPanel(options: [
             .applicationName: L10n.text("Kkuk"), .applicationVersion: "0.1.0",
@@ -440,14 +518,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .credits: NSAttributedString(string: L10n.text("Press down. Pack smaller.") + "\n7-Zip 26.03 © Igor Pavlov\nhttps://7-zip.org\n" + L10n.text("Licenses are included in the app’s Resources/Licenses folder."))
         ])
     }
+    private func finishSuccessfulService() {
+        guard model.result != nil, !confirmingQuit, !waitingForTermination else { return }
+        closeProgressWindow()
+    }
+    func closeProgressWindow() {
+        closingProgress = true
+        model.acceptsNewInput = false
+        NSApplication.shared.terminate(nil)
+    }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if waitingForTermination { return .terminateLater }
+        if confirmingQuit { return .terminateCancel }
         guard model.busy else { return .terminateNow }
-        let alert = NSAlert()
-        alert.messageText = L10n.text("Cancel the current task and quit?")
-        alert.informativeText = L10n.text("The original will be kept. Temporary archives will be removed before quitting.")
-        alert.addButton(withTitle: L10n.text("Keep Working")); alert.addButton(withTitle: L10n.text("Cancel and Quit"))
-        guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
+        model.acceptsNewInput = false
+        if !closingProgress {
+            confirmingQuit = true
+            let alert = NSAlert()
+            if let appIcon { alert.icon = appIcon.copy() as? NSImage }
+            alert.messageText = L10n.text("Cancel the current task and quit?")
+            alert.informativeText = L10n.text("The original will be kept. Temporary archives will be removed before quitting.")
+            alert.addButton(withTitle: L10n.text("Keep Working")); alert.addButton(withTitle: L10n.text("Cancel and Quit"))
+            let response = alert.runModal()
+            confirmingQuit = false
+            guard response == .alertSecondButtonReturn else {
+                model.acceptsNewInput = true
+                if model.result != nil {
+                    DispatchQueue.main.async { self.model.onArchiveSucceeded?() }
+                }
+                return .terminateCancel
+            }
+        }
         if model.canCancel {
+            waitingForTermination = true
             model.onTaskFinished = { [weak model] in
                 model?.onTaskFinished = nil
                 sender.reply(toApplicationShouldTerminate: true)
@@ -459,7 +562,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return .terminateNow
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        NSApplication.shared.terminate(nil)
+        if sender === progressWindow { closeProgressWindow() }
+        else { NSApplication.shared.terminate(nil) }
         return false
     }
 }
