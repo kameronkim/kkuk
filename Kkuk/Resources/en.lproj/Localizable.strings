@@ -1,7 +1,6 @@
 "%.1f%% smaller" = "%.1f%% smaller";
 "%@ · %@ file" = "%@ · %@ file";
 "%@ · %@ files" = "%@ · %@ files";
-"A file with that name already exists. Choose another name." = "A file with that name already exists. Choose another name.";
 "About Kkuk" = "About Kkuk";
 "Applied automatically" = "Applied automatically";
 "Based on input size and available memory." = "Based on input size and available memory.";
@@ -55,12 +54,9 @@
 "Ready to compress" = "Ready to compress";
 "Reinstall the app, then try again." = "Reinstall the app, then try again.";
 "Rename files containing line breaks, then choose the input again." = "Rename files containing line breaks, then choose the input again.";
-"Save the archive outside the source folder." = "Save the archive outside the source folder.";
-"Save using a different name." = "Save using a different name.";
 "Show in Finder" = "Show in Finder";
 "Size increased slightly" = "Size increased slightly";
 "Small high compression" = "Small high compression";
 "Standard high compression" = "Standard high compression";
 "The original will be kept. Temporary archives will be removed before quitting." = "The original will be kept. Temporary archives will be removed before quitting.";
-"Use the .7z extension for the archive." = "Use the .7z extension for the archive.";
 "Verifying archive" = "Verifying archive";

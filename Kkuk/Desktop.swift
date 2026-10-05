@@ -119,21 +119,21 @@ final class AppModel: ObservableObject {
     }
     static func userFacingError(_ failure: Error) -> String {
         // Keep engine transcripts, file paths and error codes out of the interface.
-        if let error = failure as? KkukError, case .message(let message) = error {
-            let safeMessages: [String: String] = [
-                "압축할 파일이나 폴더를 선택해 주세요.": "Choose a file or folder to compress.",
-                "시스템 루트 대신 압축할 파일이나 폴더를 선택해 주세요.": "Choose a file or folder instead of the system root.",
-                "압축 결과는 원본 폴더 바깥에 저장해 주세요.": "Save the archive outside the source folder.",
-                "저장 파일의 확장자는 .7z여야 합니다.": "Use the .7z extension for the archive.",
-                "같은 이름의 파일이 있습니다. 다른 이름으로 저장해 주세요.": "A file with that name already exists. Choose another name."
-            ]
-            if let key = safeMessages[message] { return L10n.text(key) }
-            if message.hasPrefix("줄바꿈이 포함된 파일 이름") { return L10n.text("Rename files containing line breaks, then choose the input again.") }
-            if message.hasPrefix("일반 파일·폴더·심볼릭 링크만") { return L10n.text("Choose a regular file or folder.") }
-            if message.hasPrefix("7-Zip 엔진을 찾을 수 없습니다") { return L10n.text("Reinstall the app, then try again.") }
-            if message.hasPrefix("지금은 압축에 사용할 메모리") { return L10n.text("Close other apps, then try again.") }
-            if message.hasPrefix("압축하는 동안 원본") { return L10n.text("Finish making changes to the source, then compress again.") }
-            if message.hasPrefix("압축 파일에 포함된 항목") { return L10n.text("Choose the source again, then compress.") }
+        if let error = failure as? KkukError {
+            let key: String
+            switch error {
+            case .inputMissing: key = "Choose a file or folder to compress."
+            case .systemRoot: key = "Choose a file or folder instead of the system root."
+            case .unsupportedFileName: key = "Rename files containing line breaks, then choose the input again."
+            case .unsupportedInput: key = "Choose a regular file or folder."
+            case .engineUnavailable: key = "Reinstall the app, then try again."
+            case .insufficientMemory: key = "Close other apps, then try again."
+            case .sourceChanged: key = "Finish making changes to the source, then compress again."
+            case .archiveContentsMismatch: key = "Choose the source again, then compress."
+            case .engineFailed: key = "Check the source and destination, then try again."
+            case .cancelled: key = "Canceled"
+            }
+            return L10n.text(key)
         }
         let error = failure as NSError
         if error.domain == NSCocoaErrorDomain {
@@ -141,7 +141,6 @@ final class AppModel: ObservableObject {
             case .fileWriteOutOfSpace: return L10n.text("Free up disk space, then try again.")
             case .fileReadNoPermission, .fileWriteNoPermission: return L10n.text("Check access permissions for the source and destination.")
             case .fileNoSuchFile, .fileReadNoSuchFile: return L10n.text("Choose the source file or folder again.")
-            case .fileWriteFileExists: return L10n.text("Save using a different name.")
             default: break
             }
         }

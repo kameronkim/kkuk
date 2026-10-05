@@ -2,11 +2,31 @@ import Foundation
 import Darwin
 
 public enum KkukError: LocalizedError {
-    case message(String)
+    case inputMissing
+    case systemRoot
+    case unsupportedFileName(String)
+    case unsupportedInput(String)
+    case engineUnavailable
+    case insufficientMemory
+    case sourceChanged
+    case archiveContentsMismatch(missing: [String], extra: [String])
+    case engineFailed(status: Int32, details: String)
     case cancelled
+
     public var errorDescription: String? {
         switch self {
-        case .message(let text): return text
+        case .inputMissing: return "압축할 파일이나 폴더를 선택해 주세요."
+        case .systemRoot: return "시스템 루트 대신 압축할 파일이나 폴더를 선택해 주세요."
+        case .unsupportedFileName(let name): return "줄바꿈이 포함된 파일 이름은 현재 지원하지 않습니다: \(name)"
+        case .unsupportedInput(let path): return "일반 파일·폴더·심볼릭 링크만 압축할 수 있습니다: \(path)"
+        case .engineUnavailable: return "7-Zip 엔진을 찾을 수 없습니다. 앱을 다시 빌드해 주세요."
+        case .insufficientMemory: return "지금은 압축에 사용할 메모리 여유가 부족합니다. 다른 작업을 닫은 뒤 파일이나 폴더를 다시 선택해 주세요."
+        case .sourceChanged: return "압축하는 동안 원본 파일이나 폴더가 변경됐습니다. 작업을 마친 뒤 다시 압축해 주세요."
+        case .archiveContentsMismatch(let missing, let extra):
+            return "압축 파일에 포함된 항목이 원본 목록과 다릅니다. 결과 파일을 확정하지 않았습니다.\n누락: \(missing.joined(separator: "\n"))\n추가: \(extra.joined(separator: "\n"))"
+        case .engineFailed(let status, let details):
+            let reason = status == 1 ? "일부 파일을 읽지 못했습니다." : "압축 엔진 작업에 실패했습니다."
+            return "\(reason) (코드 \(status))\n\(details)"
         case .cancelled: return "압축을 취소했습니다."
         }
     }
@@ -41,15 +61,15 @@ public enum InputScanner {
         let folder = input.standardizedFileURL.resolvingSymlinksInPath()
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory) else {
-            throw KkukError.message("압축할 파일이나 폴더를 선택해 주세요.")
+            throw KkukError.inputMissing
         }
-        guard folder.path != "/" else { throw KkukError.message("시스템 루트 대신 압축할 파일이나 폴더를 선택해 주세요.") }
+        guard folder.path != "/" else { throw KkukError.systemRoot }
         var entries: [InputEntry] = []
         var excludedPaths: [String] = []
         func visit(_ url: URL, path: String) throws {
             try checkCancellation()
             guard !path.contains("\n"), !path.contains("\r") else {
-                throw KkukError.message("줄바꿈이 포함된 파일 이름은 현재 지원하지 않습니다: \(url.lastPathComponent)")
+                throw KkukError.unsupportedFileName(url.lastPathComponent)
             }
             // Read type, identity and timestamps together without following symbolic links.
             var metadata = stat()
@@ -71,7 +91,7 @@ public enum InputScanner {
                 return
             }
             guard type == .typeDirectory || type == .typeRegular || type == .typeSymbolicLink else {
-                throw KkukError.message("일반 파일·폴더·심볼릭 링크만 압축할 수 있습니다: \(path)")
+                throw KkukError.unsupportedInput(path)
             }
             let link = type == .typeSymbolicLink ? try FileManager.default.destinationOfSymbolicLink(atPath: url.path) : nil
             let entry = InputEntry(path: path,
@@ -222,8 +242,7 @@ public final class ProcessRunner: @unchecked Sendable {
         try checkCancellation()
         let text = String(decoding: transcript, as: UTF8.self)
         guard process.terminationStatus == 0 else {
-            let reason = process.terminationStatus == 1 ? "일부 파일을 읽지 못했습니다." : "압축 엔진 작업에 실패했습니다."
-            throw KkukError.message("\(reason) (코드 \(process.terminationStatus))\n\(text.suffix(1400))")
+            throw KkukError.engineFailed(status: process.terminationStatus, details: String(text.suffix(1400)))
         }
         return text
     }
@@ -356,9 +375,9 @@ public final class ArchiveJob: Sendable {
         let fm = FileManager.default
         let nameLimit = try Self.nameLimit(in: destination.deletingLastPathComponent())
         let initialDestination = try Self.numberedDestination(destination, number: 1, nameLimit: nameLimit)
-        guard fm.isExecutableFile(atPath: engine.path) else { throw KkukError.message("7-Zip 엔진을 찾을 수 없습니다. 앱을 다시 빌드해 주세요.") }
+        guard fm.isExecutableFile(atPath: engine.path) else { throw KkukError.engineUnavailable }
         guard preset.estimatedMemoryBytes <= MemoryBudget.current() else {
-            throw KkukError.message("지금은 압축에 사용할 메모리 여유가 부족합니다. 다른 작업을 닫은 뒤 파일이나 폴더를 다시 선택해 주세요.")
+            throw KkukError.insufficientMemory
         }
         let temporary = destination.deletingLastPathComponent().appendingPathComponent(".kkuk-\(UUID().uuidString)", isDirectory: true)
         try fm.createDirectory(at: temporary, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
@@ -391,13 +410,13 @@ public final class ArchiveJob: Sendable {
         let listing = try runner.run(executable: engine, arguments: ["l", "-slt", "-ba", "-sccUTF-8", "--", archive.path])
         let actualPaths = Self.listedPaths(listing)
         guard actualPaths == snapshot.archivePaths else {
-            let missing = snapshot.archivePaths.subtracting(actualPaths).sorted().prefix(3).joined(separator: "\n")
-            let extra = actualPaths.subtracting(snapshot.archivePaths).sorted().prefix(3).joined(separator: "\n")
-            throw KkukError.message("압축 파일에 포함된 항목이 원본 목록과 다릅니다. 결과 파일을 확정하지 않았습니다.\n누락: \(missing)\n추가: \(extra)")
+            let missing = Array(snapshot.archivePaths.subtracting(actualPaths).sorted().prefix(3))
+            let extra = Array(actualPaths.subtracting(snapshot.archivePaths).sorted().prefix(3))
+            throw KkukError.archiveContentsMismatch(missing: missing, extra: extra)
         }
         let current = try InputScanner.scan(snapshot.input) { try self.runner.checkCancellation() }
         guard current.entries == snapshot.entries else {
-            throw KkukError.message("압축하는 동안 원본 파일이나 폴더가 변경됐습니다. 작업을 마친 뒤 다시 압축해 주세요.")
+            throw KkukError.sourceChanged
         }
         try runner.checkCancellation()
         // Establish private permissions before publishing the file with an exclusive rename.
