@@ -50,9 +50,24 @@ public struct InputSnapshot: Sendable {
     public let input: URL
     public let entries: [InputEntry]
     public let excludedPaths: [String]
-    public var isDirectory: Bool { entries.first { $0.path == input.lastPathComponent }?.isDirectory ?? false }
-    public var totalBytes: UInt64 { entries.filter { !$0.isDirectory }.reduce(0) { $0 + $1.size } }
-    public var fileCount: Int { entries.filter { !$0.isDirectory }.count }
+    public let isDirectory: Bool
+    public let totalBytes: UInt64
+    public let fileCount: Int
+
+    init(input: URL, entries: [InputEntry], excludedPaths: [String]) {
+        self.input = input
+        self.entries = entries
+        self.excludedPaths = excludedPaths
+        self.isDirectory = entries.first { $0.path == input.lastPathComponent }?.isDirectory ?? false
+        var bytes: UInt64 = 0
+        var count = 0
+        for entry in entries where !entry.isDirectory {
+            bytes += entry.size
+            count += 1
+        }
+        self.totalBytes = bytes
+        self.fileCount = count
+    }
     public var archivePaths: Set<String> { Set(entries.map(\.path)) }
 }
 
