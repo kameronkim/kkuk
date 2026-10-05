@@ -203,6 +203,7 @@ public final class ProcessRunner: @unchecked Sendable {
         }
     }
     public func run(executable: URL, arguments: [String], directory: URL? = nil,
+                    captureOutput: Bool = true, dataOutput: (Data) -> Void = { _ in },
                     output: (String) -> Void = { _ in }) throws -> String {
         try checkCancellation()
         let process = Process()
@@ -251,6 +252,10 @@ public final class ProcessRunner: @unchecked Sendable {
             }
             let chunk = Data(buffer.prefix(count))
             transcript.append(chunk)
+            if !captureOutput, transcript.count > 8192 {
+                transcript = Data(transcript.suffix(8192))
+            }
+            dataOutput(chunk)
             output(String(decoding: chunk, as: UTF8.self))
         }
         process.waitUntilExit()
@@ -259,7 +264,7 @@ public final class ProcessRunner: @unchecked Sendable {
         guard process.terminationStatus == 0 else {
             throw KkukError.engineFailed(status: process.terminationStatus, details: String(text.suffix(1400)))
         }
-        return text
+        return captureOutput ? text : ""
     }
 }
 
@@ -296,18 +301,50 @@ public struct ArchiveResult: Sendable {
     public let archiveBytes: UInt64
 }
 
+// Decode only complete LF-delimited records so UTF-8 names survive split pipe reads.
+// Non-path records are discarded as soon as their prefix is known.
+struct ArchivePathParser {
+    private var pending = Data()
+    private var discarding = false
+    private var paths: Set<String> = []
+    private let prefix = Data("Path = ".utf8)
+
+    mutating func consume(_ chunk: Data) {
+        for byte in chunk {
+            if byte == 10 {
+                finishLine()
+            } else if !discarding {
+                pending.append(byte)
+                if pending.count == prefix.count && pending != prefix {
+                    pending.removeAll(keepingCapacity: true)
+                    discarding = true
+                }
+            }
+        }
+    }
+    private mutating func finishLine() {
+        if !discarding, pending.starts(with: prefix) {
+            if pending.last == 13 { pending.removeLast() }
+            paths.insert(String(decoding: pending.dropFirst(prefix.count), as: UTF8.self))
+        }
+        pending.removeAll(keepingCapacity: true)
+        discarding = false
+    }
+    mutating func finish() -> Set<String> {
+        finishLine()
+        return paths
+    }
+}
+
 public final class ArchiveJob: Sendable {
     public let runner = ProcessRunner()
     public let engine: URL
     public init(engine: URL) { self.engine = engine }
     public func cancel() { runner.cancel() }
     public static func listedPaths(_ text: String) -> Set<String> {
-        // 7-Zip separates records with LF (or CRLF), not Unicode filename characters.
-        // CR and LF inside source names are rejected by InputScanner.
-        Set(text.components(separatedBy: "\n").compactMap { line in
-            let record = line.hasSuffix("\r") ? String(line.dropLast()) : line
-            return record.hasPrefix("Path = ") ? String(record.dropFirst(7)) : nil
-        })
+        var parser = ArchivePathParser()
+        parser.consume(Data(text.utf8))
+        return parser.finish()
     }
     private static func restrictAccess(to url: URL, directory: Bool) throws {
         // Change the opened object, never a symlink target substituted at this path.
@@ -416,17 +453,20 @@ public final class ArchiveJob: Sendable {
                     "-sccUTF-8", "-bb0", "-bsp1", "-y"] + exclusions + ["--", archive.path, "./" + snapshot.input.lastPathComponent]
         progress(.compressing, 0)
         var progressParser = CompressionProgressParser()
-        _ = try runner.run(executable: engine, arguments: args, directory: snapshot.input.deletingLastPathComponent()) { chunk in
+        _ = try runner.run(executable: engine, arguments: args, directory: snapshot.input.deletingLastPathComponent(), captureOutput: false, output: { chunk in
             if let value = progressParser.consume(chunk) { progress(.compressing, value) }
-        }
+        })
         progress(.verifying, nil)
-        _ = try runner.run(executable: engine, arguments: ["t", "-sccUTF-8", "-bsp0", "--", archive.path])
+        _ = try runner.run(executable: engine, arguments: ["t", "-sccUTF-8", "-bsp0", "--", archive.path], captureOutput: false)
         progress(.checkingContents, nil)
-        let listing = try runner.run(executable: engine, arguments: ["l", "-slt", "-ba", "-sccUTF-8", "--", archive.path])
-        let actualPaths = Self.listedPaths(listing)
-        guard actualPaths == snapshot.archivePaths else {
-            let missing = Array(snapshot.archivePaths.subtracting(actualPaths).sorted().prefix(3))
-            let extra = Array(actualPaths.subtracting(snapshot.archivePaths).sorted().prefix(3))
+        var pathParser = ArchivePathParser()
+        _ = try runner.run(executable: engine, arguments: ["l", "-slt", "-ba", "-sccUTF-8", "--", archive.path],
+                           captureOutput: false, dataOutput: { pathParser.consume($0) })
+        let actualPaths = pathParser.finish()
+        let expectedPaths = snapshot.archivePaths
+        guard actualPaths == expectedPaths else {
+            let missing = Array(expectedPaths.subtracting(actualPaths).sorted().prefix(3))
+            let extra = Array(actualPaths.subtracting(expectedPaths).sorted().prefix(3))
             throw KkukError.archiveContentsMismatch(missing: missing, extra: extra)
         }
         let current = try InputScanner.scan(snapshot.input) { try self.runner.checkCancellation() }
