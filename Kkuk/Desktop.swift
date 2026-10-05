@@ -27,8 +27,8 @@ final class AppModel: ObservableObject {
     func chooseInput() {
         guard !busy else { return }
         let panel = NSOpenPanel()
-        panel.title = "압축할 파일이나 폴더 선택"
-        panel.prompt = "선택"
+        panel.title = L10n.text("Choose a file or folder to compress")
+        panel.prompt = L10n.text("Choose")
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
@@ -59,7 +59,7 @@ final class AppModel: ObservableObject {
                     self.showsScanGauge = false
                     self.snapshot = scanned; self.preset = selected; self.busy = false; self.scanning = false
                     self.selectedInput = scanned.input; self.selectedIsDirectory = scanned.isDirectory
-                    self.status = "압축 준비 완료"
+                    self.status = L10n.text("Ready to compress")
                     self.detail = ""
                 }
             } catch {
@@ -73,7 +73,7 @@ final class AppModel: ObservableObject {
         let job = ArchiveJob(engine: engine)
         self.job = job
         busy = true; error = nil; result = nil; progress = nil
-        status = "압축 준비 중"; detail = ""
+        status = L10n.text("Preparing compression"); detail = ""
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 let current = try InputScanner.scan(snapshot.input) { try job.runner.checkCancellation() }
@@ -83,16 +83,16 @@ final class AppModel: ObservableObject {
                     DispatchQueue.main.async {
                         self.progress = value
                         switch stage {
-                        case .compressing: self.status = "꾹 압축 중"; self.detail = ""
-                        case .verifying: self.status = "압축 파일 검사 중"; self.detail = ""
-                        case .checkingContents: self.status = "포함 파일 확인 중"; self.detail = ""
+                        case .compressing: self.status = L10n.text("Kkuk is compressing"); self.detail = ""
+                        case .verifying: self.status = L10n.text("Verifying archive"); self.detail = ""
+                        case .checkingContents: self.status = L10n.text("Checking archive contents"); self.detail = ""
                         case .finished: break
                         }
                     }
                 }
                 DispatchQueue.main.async {
                     self.result = result; self.busy = false; self.job = nil; self.progress = nil
-                    self.status = "압축과 검사 완료"
+                    self.status = L10n.text("Compression and verification complete")
                     self.detail = Self.resultDetail(result)
                     self.onTaskFinished?()
                 }
@@ -103,7 +103,7 @@ final class AppModel: ObservableObject {
     }
     func cancel() {
         guard let job else { return }
-        status = "취소 중"; detail = ""
+        status = L10n.text("Canceling"); detail = ""
         job.cancel()
     }
     func fail(_ failure: Error) {
@@ -111,41 +111,41 @@ final class AppModel: ObservableObject {
         showsScanGauge = false
         busy = false; scanning = false; progress = nil; job = nil
         if let kkukError = failure as? KkukError, case .cancelled = kkukError {
-            error = nil; status = "취소됨"; detail = ""
+            error = nil; status = L10n.text("Canceled"); detail = ""
         } else {
-            error = Self.userFacingError(failure); status = "압축하지 못했습니다."; detail = ""
+            error = Self.userFacingError(failure); status = L10n.text("Could not compress."); detail = ""
         }
         onTaskFinished?()
     }
     static func userFacingError(_ failure: Error) -> String {
         // Keep engine transcripts, file paths and error codes out of the interface.
         if let error = failure as? KkukError, case .message(let message) = error {
-            let safeMessages = [
-                "압축할 파일이나 폴더를 선택해 주세요.",
-                "시스템 루트 대신 압축할 파일이나 폴더를 선택해 주세요.",
-                "압축 결과는 원본 폴더 바깥에 저장해 주세요.",
-                "저장 파일의 확장자는 .7z여야 합니다.",
-                "같은 이름의 파일이 있습니다. 다른 이름으로 저장해 주세요."
+            let safeMessages: [String: String] = [
+                "압축할 파일이나 폴더를 선택해 주세요.": "Choose a file or folder to compress.",
+                "시스템 루트 대신 압축할 파일이나 폴더를 선택해 주세요.": "Choose a file or folder instead of the system root.",
+                "압축 결과는 원본 폴더 바깥에 저장해 주세요.": "Save the archive outside the source folder.",
+                "저장 파일의 확장자는 .7z여야 합니다.": "Use the .7z extension for the archive.",
+                "같은 이름의 파일이 있습니다. 다른 이름으로 저장해 주세요.": "A file with that name already exists. Choose another name."
             ]
-            if safeMessages.contains(message) { return message }
-            if message.hasPrefix("줄바꿈이 포함된 파일 이름") { return "줄바꿈이 포함된 파일 이름을 바꾼 뒤 다시 선택해 주세요." }
-            if message.hasPrefix("일반 파일·폴더·심볼릭 링크만") { return "일반 파일이나 폴더를 선택해 주세요." }
-            if message.hasPrefix("7-Zip 엔진을 찾을 수 없습니다") { return "앱을 다시 설치한 뒤 시도해 주세요." }
-            if message.hasPrefix("지금은 압축에 사용할 메모리") { return "다른 앱을 닫은 뒤 다시 시도해 주세요." }
-            if message.hasPrefix("압축하는 동안 원본") { return "원본 변경 작업을 마친 뒤 다시 압축해 주세요." }
-            if message.hasPrefix("압축 파일에 포함된 항목") { return "원본을 다시 선택한 뒤 압축해 주세요." }
+            if let key = safeMessages[message] { return L10n.text(key) }
+            if message.hasPrefix("줄바꿈이 포함된 파일 이름") { return L10n.text("Rename files containing line breaks, then choose the input again.") }
+            if message.hasPrefix("일반 파일·폴더·심볼릭 링크만") { return L10n.text("Choose a regular file or folder.") }
+            if message.hasPrefix("7-Zip 엔진을 찾을 수 없습니다") { return L10n.text("Reinstall the app, then try again.") }
+            if message.hasPrefix("지금은 압축에 사용할 메모리") { return L10n.text("Close other apps, then try again.") }
+            if message.hasPrefix("압축하는 동안 원본") { return L10n.text("Finish making changes to the source, then compress again.") }
+            if message.hasPrefix("압축 파일에 포함된 항목") { return L10n.text("Choose the source again, then compress.") }
         }
         let error = failure as NSError
         if error.domain == NSCocoaErrorDomain {
             switch CocoaError.Code(rawValue: error.code) {
-            case .fileWriteOutOfSpace: return "저장 공간을 확보한 뒤 다시 시도해 주세요."
-            case .fileReadNoPermission, .fileWriteNoPermission: return "파일과 저장 위치의 접근 권한을 확인해 주세요."
-            case .fileNoSuchFile, .fileReadNoSuchFile: return "원본 파일이나 폴더를 다시 선택해 주세요."
-            case .fileWriteFileExists: return "다른 이름으로 저장해 주세요."
+            case .fileWriteOutOfSpace: return L10n.text("Free up disk space, then try again.")
+            case .fileReadNoPermission, .fileWriteNoPermission: return L10n.text("Check access permissions for the source and destination.")
+            case .fileNoSuchFile, .fileReadNoSuchFile: return L10n.text("Choose the source file or folder again.")
+            case .fileWriteFileExists: return L10n.text("Save using a different name.")
             default: break
             }
         }
-        return "원본과 저장 위치를 확인한 뒤 다시 시도해 주세요."
+        return L10n.text("Check the source and destination, then try again.")
     }
     func reveal() {
         if let result { NSWorkspace.shared.activateFileViewerSelecting([result.url]) }
@@ -156,12 +156,12 @@ final class AppModel: ObservableObject {
     static func resultDetail(_ result: ArchiveResult) -> String {
         let change: String
         if result.originalBytes == 0 {
-            change = "빈 항목을 보관했습니다"
+            change = L10n.text("Empty item archived")
         } else if result.archiveBytes > result.originalBytes {
-            change = "크기가 조금 늘었습니다"
+            change = L10n.text("Size increased slightly")
         } else {
             let percent = (1 - Double(result.archiveBytes) / Double(result.originalBytes)) * 100
-            change = String(format: "%.1f%% 작아짐", percent)
+            change = L10n.format("%.1f%% smaller", percent)
         }
         return "\(bytes(result.originalBytes)) → \(bytes(result.archiveBytes)) · \(change)"
     }
@@ -237,8 +237,8 @@ struct OperationDivider: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("진행률")
-        .accessibilityValue(progress.map { "\(Int(min(max($0, 0), 1) * 100))%" } ?? "진행 중")
+        .accessibilityLabel(L10n.text("Progress"))
+        .accessibilityValue(progress.map { "\(Int(min(max($0, 0), 1) * 100))%" } ?? L10n.text("In progress"))
         .accessibilityHidden(!busy)
     }
 }
@@ -255,11 +255,11 @@ struct CompressionView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("꾹").font(.system(size: 40, weight: .bold)).tracking(-1.2)
-                    Text("꾹 눌러, 더 작게.").font(.system(size: 12)).foregroundStyle(KkukTheme.secondary)
+                    Text(L10n.text("Kkuk")).font(.system(size: 40, weight: .bold)).tracking(-1.2)
+                    Text(L10n.text("Press down. Pack smaller.")).font(.system(size: 12)).foregroundStyle(KkukTheme.secondary)
                 }
                 Spacer()
-                Text("압축률 최우선").font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(KkukTheme.secondary)
+                Text(L10n.text("Compression priority")).font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(KkukTheme.secondary)
                     .padding(.top, 7)
             }.padding(.bottom, 26)
             Button(action: model.chooseInput) {
@@ -267,7 +267,7 @@ struct CompressionView: View {
                     Image(systemName: model.selectedInput == nil ? "plus.square.dashed" : (model.selectedIsDirectory ? "folder.fill" : "doc.fill"))
                         .font(.system(size: 20)).foregroundStyle(KkukTheme.accent).frame(width: 24)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(model.selectedInput?.lastPathComponent ?? "파일이나 폴더를 여기에 놓으세요")
+                        Text(model.selectedInput?.lastPathComponent ?? L10n.text("Drop a file or folder here"))
                             .font(.system(size: 14, weight: .medium)).foregroundStyle(KkukTheme.text)
                             .lineLimit(1).truncationMode(.middle)
                         Text(inputMetadata)
@@ -290,14 +290,14 @@ struct CompressionView: View {
                 .focused($focusedControl, equals: .target)
                 .onHover { targetHovered = $0 }
                 .animation(.easeOut(duration: 0.14), value: targetHovered)
-                .accessibilityLabel(model.selectedInput == nil ? "압축할 파일이나 폴더 선택" : "다른 파일이나 폴더 선택")
+                .accessibilityLabel(model.selectedInput == nil ? L10n.text("Choose a file or folder to compress") : L10n.text("Choose another file or folder"))
             HStack(alignment: .top, spacing: 16) {
-                Text("적용 프리셋").font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(KkukTheme.secondary).frame(width: 78, alignment: .leading)
+                Text(L10n.text("Preset")).font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(KkukTheme.secondary).frame(width: 78, alignment: .leading)
                 VStack(alignment: .leading, spacing: 5) {
                     Text(presetValue).font(.system(size: 14, weight: .semibold))
                         .contentTransition(.opacity)
                         .animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: presetValue)
-                    Text("입력 크기와 메모리 여유에 맞춰 설정합니다.").font(.system(size: 10)).foregroundStyle(KkukTheme.secondary)
+                    Text(L10n.text("Based on input size and available memory.")).font(.system(size: 10)).foregroundStyle(KkukTheme.secondary)
                 }
                 Spacer()
             }.padding(.top, 18)
@@ -322,14 +322,14 @@ struct CompressionView: View {
     }
     private var inputMetadata: String {
         if let snapshot = model.snapshot {
-            return snapshot.isDirectory ? "\(AppModel.bytes(snapshot.totalBytes)) · 파일 \(snapshot.fileCount.formatted())개" : AppModel.bytes(snapshot.totalBytes)
+            return snapshot.isDirectory ? L10n.format(snapshot.fileCount == 1 ? "%@ · %@ file" : "%@ · %@ files", AppModel.bytes(snapshot.totalBytes), snapshot.fileCount.formatted()) : AppModel.bytes(snapshot.totalBytes)
         }
-        guard model.selectedInput != nil else { return "클릭해서 선택할 수도 있습니다." }
-        guard model.scanning else { return "정보를 확인하지 못했습니다." }
-        return model.selectedIsDirectory ? "크기 · 파일 개수 확인 중…" : "크기 확인 중…"
+        guard model.selectedInput != nil else { return L10n.text("Or click to choose.") }
+        guard model.scanning else { return L10n.text("Could not read file information.") }
+        return model.selectedIsDirectory ? L10n.text("Checking size and file count…") : L10n.text("Checking size…")
     }
     private var presetValue: String {
-        model.preset?.name ?? (model.scanning ? "확인 중…" : "선택하면 자동 적용")
+        model.preset.map { L10n.presetName($0.dictionaryMiB) } ?? (model.scanning ? L10n.text("Checking…") : L10n.text("Applied automatically"))
     }
     private var operationArea: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -341,7 +341,7 @@ struct CompressionView: View {
                     if let error = model.error {
                         Text(error).font(.system(size: 11)).foregroundStyle(KkukTheme.secondary)
                             .fixedSize(horizontal: false, vertical: true).lineLimit(2)
-                            .accessibilityLabel("압축 오류: \(error)")
+                            .accessibilityLabel(L10n.format("Compression error: %@", error))
                     } else if !model.detail.isEmpty {
                         Text(model.detail).font(.system(size: 11)).foregroundStyle(KkukTheme.secondary)
                             .fixedSize(horizontal: false, vertical: true).lineLimit(2)
@@ -349,11 +349,11 @@ struct CompressionView: View {
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 Group {
                     if model.busy && !model.scanning {
-                        if model.canCancel { Button("취소", action: model.cancel).buttonStyle(QuietActionStyle(secondary: true, focused: focusedControl == .operation)) }
+                        if model.canCancel { Button(L10n.text("Cancel"), action: model.cancel).buttonStyle(QuietActionStyle(secondary: true, focused: focusedControl == .operation)) }
                     } else if model.result != nil {
-                        Button("Finder에서 보기", action: model.reveal).buttonStyle(QuietActionStyle(focused: focusedControl == .operation))
+                        Button(L10n.text("Show in Finder"), action: model.reveal).buttonStyle(QuietActionStyle(focused: focusedControl == .operation))
                     } else {
-                        Button("압축하기", action: model.start).buttonStyle(QuietActionStyle(focused: focusedControl == .operation))
+                        Button(L10n.text("Compress"), action: model.start).buttonStyle(QuietActionStyle(focused: focusedControl == .operation))
                             .disabled(model.snapshot == nil || model.busy).keyboardShortcut(.defaultAction)
                     }
                 }.focusable().focused($focusedControl, equals: .operation).frame(width: 112, alignment: .trailing)
@@ -375,7 +375,7 @@ struct CompressionView: View {
                     .focused($focusedControl, equals: .github)
                     .onHover { githubHovered = $0 }
                     .animation(.easeOut(duration: 0.14), value: githubHovered)
-                    .accessibilityLabel("GitHub에서 꾹 저장소 열기")
+                    .accessibilityLabel(L10n.text("Open Kkuk on GitHub"))
                     .help(KkukTheme.githubURL.absoluteString)
                 Spacer()
                 Text("Kkuk · macOS").font(.system(size: 10, design: .monospaced)).foregroundStyle(KkukTheme.secondary)
@@ -395,7 +395,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 400),
                               styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = "꾹 · Kkuk"
+        window.title = L10n.text("Kkuk")
         window.appearance = NSAppearance(named: .darkAqua)
         window.backgroundColor = NSColor(KkukTheme.background)
         window.contentView = NSHostingView(rootView: CompressionView(model: model))
@@ -406,13 +406,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let menu = NSMenu()
         let item = NSMenuItem(); menu.addItem(item)
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "꾹에 관하여", action: #selector(about), keyEquivalent: "")
+        appMenu.addItem(withTitle: L10n.text("About Kkuk"), action: #selector(about), keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "꾹 종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: L10n.text("Quit Kkuk"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         item.submenu = appMenu
         let fileItem = NSMenuItem(); menu.addItem(fileItem)
-        let fileMenu = NSMenu(title: "파일")
-        fileMenu.addItem(withTitle: "파일 또는 폴더 선택…", action: #selector(openInput), keyEquivalent: "o")
+        let fileMenu = NSMenu(title: L10n.text("File"))
+        fileMenu.addItem(withTitle: L10n.text("Choose File or Folder…"), action: #selector(openInput), keyEquivalent: "o")
         fileItem.submenu = fileMenu
         NSApplication.shared.mainMenu = menu
         NSApplication.shared.activate(ignoringOtherApps: true)
@@ -420,17 +420,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func openInput() { model.chooseInput() }
     @objc func about() {
         NSApplication.shared.orderFrontStandardAboutPanel(options: [
-            .applicationName: "꾹 · Kkuk", .applicationVersion: "0.1.0",
+            .applicationName: L10n.text("Kkuk"), .applicationVersion: "0.1.0",
             .applicationIcon: NSApplication.shared.applicationIconImage as Any,
-            .credits: NSAttributedString(string: "꾹 눌러, 더 작게.\n7-Zip 26.03 © Igor Pavlov\nhttps://7-zip.org\n라이선스는 앱의 Resources/Licenses에 포함되어 있습니다.")
+            .credits: NSAttributedString(string: L10n.text("Press down. Pack smaller.") + "\n7-Zip 26.03 © Igor Pavlov\nhttps://7-zip.org\n" + L10n.text("Licenses are included in the app’s Resources/Licenses folder."))
         ])
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard model.busy else { return .terminateNow }
         let alert = NSAlert()
-        alert.messageText = "진행 중인 작업을 취소하고 종료할까요?"
-        alert.informativeText = "원본은 유지됩니다. 압축 중이었다면 임시 파일을 정리한 뒤 종료합니다."
-        alert.addButton(withTitle: "계속 작업"); alert.addButton(withTitle: "취소하고 종료")
+        alert.messageText = L10n.text("Cancel the current task and quit?")
+        alert.informativeText = L10n.text("The original will be kept. Temporary archives will be removed before quitting.")
+        alert.addButton(withTitle: L10n.text("Keep Working")); alert.addButton(withTitle: L10n.text("Cancel and Quit"))
         guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
         if model.canCancel {
             model.onTaskFinished = { [weak model] in
