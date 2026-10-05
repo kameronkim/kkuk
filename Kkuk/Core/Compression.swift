@@ -386,7 +386,16 @@ public final class ArchiveJob: Sendable {
         let archive = temporary.appendingPathComponent("result.7z")
         // Explicit solid limit covers this input; two threads avoid independent block parallelism.
         let solidBytes = max(snapshot.totalBytes + 1_073_741_824, 1_073_741_824)
-        let exclusions = snapshot.excludedPaths.map { "-x!" + $0 }
+        var exclusions: [String] = []
+        if !snapshot.excludedPaths.isEmpty {
+            // Keep the process argument count constant even for thousands of sockets.
+            // Outer quotes preserve leading/trailing spaces and literal quotes in names.
+            let list = temporary.appendingPathComponent("excluded-paths.txt")
+            let contents = snapshot.excludedPaths.map { "\"" + $0 + "\"" }.joined(separator: "\n") + "\n"
+            try contents.write(to: list, atomically: false, encoding: .utf8)
+            try Self.restrictAccess(to: list, directory: false)
+            exclusions = ["-scsUTF-8", "-x@" + list.path]
+        }
         let args = ["a", "-t7z", "-m0=lzma2", "-mx=9", "-md=\(preset.dictionaryMiB)m",
                     "-mfb=273", "-ms=\(solidBytes)b", "-mmt=2", "-mqs=on", "-sse", "-snl", "-ssp", "-spd",
                     "-sccUTF-8", "-bb0", "-bsp1", "-y"] + exclusions + ["--", archive.path, "./" + snapshot.input.lastPathComponent]
