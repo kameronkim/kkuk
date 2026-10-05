@@ -4,8 +4,9 @@ import PackageDescription
 let package = Package(
     name: "Kkuk",
     platforms: [.macOS(.v13)],
-    products: [.library(name: "KkukCore", targets: ["KkukCore"])],
+    products: [.executable(name: "Kkuk", targets: ["Kkuk"])],
     targets: [
-        .target(name: "KkukCore", path: "Kkuk/Core")
+        .target(name: "KkukCore", path: "Kkuk/Core"),
+        .executableTarget(name: "Kkuk", dependencies: ["KkukCore"], path: "Kkuk", exclude: ["Core", "Resources"])
     ]
 )
