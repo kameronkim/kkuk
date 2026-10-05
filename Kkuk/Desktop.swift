@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import SwiftUI
 import UniformTypeIdentifiers
 import KkukCore
@@ -142,6 +143,14 @@ final class AppModel: ObservableObject {
             return L10n.text(key)
         }
         let error = failure as NSError
+        if error.domain == NSPOSIXErrorDomain {
+            switch Int32(error.code) {
+            case ENOSPC, EDQUOT: return L10n.text("Free up disk space, then try again.")
+            case EACCES, EPERM: return L10n.text("Check access permissions for the source and destination.")
+            case ENOENT, ENOTDIR: return L10n.text("Choose the source file or folder again.")
+            default: break
+            }
+        }
         if error.domain == NSCocoaErrorDomain {
             switch CocoaError.Code(rawValue: error.code) {
             case .fileWriteOutOfSpace: return L10n.text("Free up disk space, then try again.")
