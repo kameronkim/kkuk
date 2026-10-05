@@ -76,8 +76,7 @@ public struct InputSnapshot: Sendable {
 public enum InputScanner {
     public static func scan(_ input: URL, checkCancellation: () throws -> Void = {}) throws -> InputSnapshot {
         let folder = input.standardizedFileURL.resolvingSymlinksInPath()
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory) else {
+        guard FileManager.default.fileExists(atPath: folder.path) else {
             throw KkukError.inputMissing
         }
         guard folder.path != "/" else { throw KkukError.systemRoot }
@@ -122,8 +121,7 @@ public enum InputScanner {
                                    changedNanoseconds: metadata.st_ctimespec.tv_nsec)
             entries.append(entry)
             if entry.isDirectory {
-                for child in try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)
-                    .sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+                for child in try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil) {
                     try visit(child, path: path + "/" + child.lastPathComponent)
                 }
             }
@@ -206,8 +204,7 @@ public final class ProcessRunner: @unchecked Sendable {
         }
     }
     public func run(executable: URL, arguments: [String], directory: URL? = nil,
-                    captureOutput: Bool = true, dataOutput: (Data) -> Void = { _ in },
-                    output: (String) -> Void = { _ in }) throws -> String {
+                    output: (Data) -> Void = { _ in }) throws {
         try checkCancellation()
         let process = Process()
         process.executableURL = executable
@@ -255,19 +252,17 @@ public final class ProcessRunner: @unchecked Sendable {
             }
             let chunk = Data(buffer.prefix(count))
             transcript.append(chunk)
-            if !captureOutput, transcript.count > 8192 {
+            if transcript.count > 8192 {
                 transcript = Data(transcript.suffix(8192))
             }
-            dataOutput(chunk)
-            output(String(decoding: chunk, as: UTF8.self))
+            output(chunk)
         }
         process.waitUntilExit()
         try checkCancellation()
-        let text = String(decoding: transcript, as: UTF8.self)
         guard process.terminationStatus == 0 else {
+            let text = String(decoding: transcript, as: UTF8.self)
             throw KkukError.engineFailed(status: process.terminationStatus, details: String(text.suffix(1400)))
         }
-        return captureOutput ? text : ""
     }
 }
 
@@ -276,9 +271,9 @@ struct CompressionProgressParser {
     private var boundary = true
     private var digits = 0
     private var value = 0
-    mutating func consume(_ chunk: String) -> Double? {
+    mutating func consume(_ chunk: Data) -> Double? {
         var latest: Double?
-        for byte in chunk.utf8 {
+        for byte in chunk {
             if byte >= 48 && byte <= 57, boundary || digits > 0 {
                 if digits < 3 {
                     value = value * 10 + Int(byte - 48)
@@ -445,11 +440,6 @@ public final class ArchiveJob: Sendable {
     public let engine: URL
     public init(engine: URL) { self.engine = engine }
     public func cancel() { runner.cancel() }
-    public static func listedPaths(_ text: String) -> Set<String> {
-        var parser = ArchivePathParser()
-        parser.consume(Data(text.utf8))
-        return parser.finish()
-    }
     private static func restrictAccess(to url: URL, directory: Bool) throws {
         // Change the opened object, never a symlink target substituted at this path.
         let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
@@ -572,17 +562,17 @@ public final class ArchiveJob: Sendable {
         progress(.compressing, 0)
         try parent.verify()
         var progressParser = CompressionProgressParser()
-        _ = try runner.run(executable: engine, arguments: args, directory: snapshot.input.deletingLastPathComponent(), captureOutput: false, output: { chunk in
+        try runner.run(executable: engine, arguments: args, directory: snapshot.input.deletingLastPathComponent(), output: { chunk in
             if let value = progressParser.consume(chunk) { progress(.compressing, value) }
         })
         progress(.verifying, nil)
         try parent.verify()
-        _ = try runner.run(executable: engine, arguments: ["t", "-sccUTF-8", "-bsp0", "--", archive.path], captureOutput: false)
+        try runner.run(executable: engine, arguments: ["t", "-sccUTF-8", "-bsp0", "--", archive.path])
         progress(.checkingContents, nil)
         try parent.verify()
         var pathParser = ArchivePathParser()
-        _ = try runner.run(executable: engine, arguments: ["l", "-slt", "-ba", "-sccUTF-8", "--", archive.path],
-                           captureOutput: false, dataOutput: { pathParser.consume($0) })
+        try runner.run(executable: engine, arguments: ["l", "-slt", "-ba", "-sccUTF-8", "--", archive.path],
+                           output: { pathParser.consume($0) })
         let actualPaths = pathParser.finish()
         let expectedPaths = snapshot.archivePaths
         guard actualPaths == expectedPaths else {
