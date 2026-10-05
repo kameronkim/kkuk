@@ -7,6 +7,7 @@ public enum KkukError: LocalizedError {
     case unsupportedFileName(String)
     case unsupportedInput(String)
     case engineUnavailable
+    case unsafeDestination
     case insufficientMemory
     case sourceChanged
     case archiveContentsMismatch(missing: [String], extra: [String])
@@ -20,6 +21,7 @@ public enum KkukError: LocalizedError {
         case .unsupportedFileName(let name): return "줄바꿈이 포함된 파일 이름은 현재 지원하지 않습니다: \(name)"
         case .unsupportedInput(let path): return "일반 파일·폴더·심볼릭 링크만 압축할 수 있습니다: \(path)"
         case .engineUnavailable: return "7-Zip 엔진을 찾을 수 없습니다. 앱을 다시 빌드해 주세요."
+        case .unsafeDestination: return "원본을 개인 폴더로 옮긴 뒤 다시 시도해 주세요."
         case .insufficientMemory: return "지금은 압축에 사용할 메모리 여유가 부족합니다. 다른 작업을 닫은 뒤 파일이나 폴더를 다시 선택해 주세요."
         case .sourceChanged: return "압축하는 동안 원본 파일이나 폴더가 변경됐습니다. 작업을 마친 뒤 다시 압축해 주세요."
         case .archiveContentsMismatch(let missing, let extra):
@@ -337,6 +339,107 @@ struct ArchivePathParser {
     }
 }
 
+// Pin every ancestor, and reject locations another account can replace.
+// Engine paths remain safe while these directories retain their trusted permissions.
+private final class PinnedDestinationDirectory {
+    let url: URL
+    private let ancestors: [Int32]
+    var descriptor: Int32 { ancestors.last! }
+
+    init(_ url: URL) throws {
+        guard let resolved = realpath(url.path, nil) else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        let canonical = URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
+        free(resolved)
+        self.url = canonical
+        var opened: [Int32] = []
+        do {
+            let root = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard root >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+            opened.append(root)
+            try Self.checkPermissions(root)
+            for component in canonical.pathComponents.dropFirst() {
+                let next = openat(opened.last!, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                guard next >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+                opened.append(next)
+                try Self.checkPermissions(next)
+            }
+        } catch {
+            opened.forEach { close($0) }
+            throw error
+        }
+        ancestors = opened
+    }
+    deinit { ancestors.forEach { close($0) } }
+
+    func verify() throws {
+        for directory in ancestors { try Self.checkPermissions(directory) }
+        var pinned = stat(), current = stat()
+        guard fstat(descriptor, &pinned) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        guard lstat(url.path, &current) == 0,
+              current.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR),
+              current.st_dev == pinned.st_dev, current.st_ino == pinned.st_ino else {
+            throw KkukError.sourceChanged
+        }
+    }
+    private static func checkPermissions(_ descriptor: Int32) throws {
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        // The sticky bit protects our directory entries in system temporary folders.
+        guard metadata.st_uid == geteuid() || metadata.st_uid == 0,
+              metadata.st_mode & 0o022 == 0 || metadata.st_mode & mode_t(S_ISVTX) != 0 else {
+            throw KkukError.unsafeDestination
+        }
+        guard let acl = acl_get_fd(descriptor) else {
+            let code = errno
+            if code == ENOENT || code == ENOATTR || code == ENOTSUP { return }
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+        }
+        defer { acl_free(UnsafeMutableRawPointer(acl)) }
+        var entry: acl_entry_t?
+        var entryID = Int32(ACL_FIRST_ENTRY.rawValue)
+        let writeMask = [ACL_WRITE_DATA, ACL_APPEND_DATA, ACL_DELETE_CHILD, ACL_DELETE,
+                         ACL_WRITE_SECURITY, ACL_CHANGE_OWNER].reduce(UInt64(0)) { $0 | UInt64($1.rawValue) }
+        while acl_get_entry(acl, entryID, &entry) == 0 {
+            entryID = Int32(ACL_NEXT_ENTRY.rawValue)
+            var tag = ACL_UNDEFINED_TAG
+            var mask: acl_permset_mask_t = 0
+            guard acl_get_tag_type(entry, &tag) == 0,
+                  acl_get_permset_mask_np(entry, &mask) == 0 else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            }
+            if tag == ACL_EXTENDED_ALLOW && mask & writeMask != 0 {
+                throw KkukError.unsafeDestination
+            }
+        }
+    }
+    func removeTemporary(_ descriptor: Int32, name: String) {
+        // Cleanup stays attached to the opened objects even if their paths move.
+        let duplicate = dup(descriptor)
+        if duplicate >= 0, let directory = fdopendir(duplicate) {
+            defer { closedir(directory) }
+            while let entry = readdir(directory) {
+                let child = withUnsafePointer(to: &entry.pointee.d_name) {
+                    $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) { String(cString: $0) }
+                }
+                if child != "." && child != ".." { _ = unlinkat(descriptor, child, 0) }
+            }
+        }
+        else if duplicate >= 0 { close(duplicate) }
+        var expected = stat(), current = stat()
+        if fstat(descriptor, &expected) == 0,
+           fstatat(self.descriptor, name, &current, AT_SYMLINK_NOFOLLOW) == 0,
+           expected.st_dev == current.st_dev && expected.st_ino == current.st_ino {
+            _ = unlinkat(self.descriptor, name, AT_REMOVEDIR)
+        }
+    }
+}
+
 public final class ArchiveJob: Sendable {
     public let runner = ProcessRunner()
     public let engine: URL
@@ -353,6 +456,9 @@ public final class ArchiveJob: Sendable {
             | (directory ? O_DIRECTORY : 0))
         guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         defer { close(descriptor) }
+        try restrictAccess(descriptor: descriptor, directory: directory)
+    }
+    private static func restrictAccess(descriptor: Int32, directory: Bool) throws {
         var metadata = stat()
         guard fstat(descriptor, &metadata) == 0 else {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
@@ -426,16 +532,27 @@ public final class ArchiveJob: Sendable {
         let destination = snapshot.input.deletingLastPathComponent()
             .appendingPathComponent(snapshot.input.lastPathComponent + ".7z")
         let fm = FileManager.default
-        let nameLimit = try Self.nameLimit(in: destination.deletingLastPathComponent())
+        let parent = try PinnedDestinationDirectory(destination.deletingLastPathComponent())
+        let nameLimit = try Self.nameLimit(in: parent.url)
         let initialDestination = try Self.numberedDestination(destination, number: 1, nameLimit: nameLimit)
         guard fm.isExecutableFile(atPath: engine.path) else { throw KkukError.engineUnavailable }
         guard preset.estimatedMemoryBytes <= MemoryBudget.current() else {
             throw KkukError.insufficientMemory
         }
-        let temporary = destination.deletingLastPathComponent().appendingPathComponent(".kkuk-\(UUID().uuidString)", isDirectory: true)
-        try fm.createDirectory(at: temporary, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        defer { try? fm.removeItem(at: temporary) }
-        try Self.restrictAccess(to: temporary, directory: true)
+        let temporaryName = ".kkuk-\(UUID().uuidString)"
+        let temporary = parent.url.appendingPathComponent(temporaryName, isDirectory: true)
+        guard mkdirat(parent.descriptor, temporaryName, 0o700) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        let temporaryDescriptor = openat(parent.descriptor, temporaryName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard temporaryDescriptor >= 0 else {
+            let code = errno
+            _ = unlinkat(parent.descriptor, temporaryName, AT_REMOVEDIR)
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+        }
+        defer { parent.removeTemporary(temporaryDescriptor, name: temporaryName); close(temporaryDescriptor) }
+        try Self.restrictAccess(descriptor: temporaryDescriptor, directory: true)
+        try parent.verify()
         let archive = temporary.appendingPathComponent("result.7z")
         // Explicit solid limit covers this input; two threads avoid independent block parallelism.
         let solidBytes = max(snapshot.totalBytes + 1_073_741_824, 1_073_741_824)
@@ -453,13 +570,16 @@ public final class ArchiveJob: Sendable {
                     "-mfb=273", "-ms=\(solidBytes)b", "-mmt=2", "-mqs=on", "-sse", "-snl", "-ssp", "-spd",
                     "-sccUTF-8", "-bb0", "-bsp1", "-y"] + exclusions + ["--", archive.path, "./" + snapshot.input.lastPathComponent]
         progress(.compressing, 0)
+        try parent.verify()
         var progressParser = CompressionProgressParser()
         _ = try runner.run(executable: engine, arguments: args, directory: snapshot.input.deletingLastPathComponent(), captureOutput: false, output: { chunk in
             if let value = progressParser.consume(chunk) { progress(.compressing, value) }
         })
         progress(.verifying, nil)
+        try parent.verify()
         _ = try runner.run(executable: engine, arguments: ["t", "-sccUTF-8", "-bsp0", "--", archive.path], captureOutput: false)
         progress(.checkingContents, nil)
+        try parent.verify()
         var pathParser = ArchivePathParser()
         _ = try runner.run(executable: engine, arguments: ["l", "-slt", "-ba", "-sccUTF-8", "--", archive.path],
                            captureOutput: false, dataOutput: { pathParser.consume($0) })
@@ -470,21 +590,30 @@ public final class ArchiveJob: Sendable {
             let extra = Array(actualPaths.subtracting(expectedPaths).sorted().prefix(3))
             throw KkukError.archiveContentsMismatch(missing: missing, extra: extra)
         }
+        try parent.verify()
         let current = try InputScanner.scan(snapshot.input) { try self.runner.checkCancellation() }
         guard current.entries == snapshot.entries else {
             throw KkukError.sourceChanged
         }
         try runner.checkCancellation()
         // Establish private permissions before publishing the file with an exclusive rename.
-        try Self.restrictAccess(to: archive, directory: false)
-        // Finish all fallible metadata reads before the atomic publication.
-        let size = (try fm.attributesOfItem(atPath: archive.path)[.size] as? NSNumber)?.uint64Value ?? 0
+        try parent.verify()
+        let archiveDescriptor = openat(temporaryDescriptor, "result.7z", O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard archiveDescriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        defer { close(archiveDescriptor) }
+        try Self.restrictAccess(descriptor: archiveDescriptor, directory: false)
+        var archiveMetadata = stat()
+        guard fstat(archiveDescriptor, &archiveMetadata) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        let size = UInt64(max(0, archiveMetadata.st_size))
         var finalURL = initialDestination
         var number = 1
         while true {
             try runner.checkCancellation()
             // Exclusive rename commits atomically without overwriting even a dangling symlink.
-            if renamex_np(archive.path, finalURL.path, UInt32(RENAME_EXCL)) == 0 { break }
+            try parent.verify()
+            if renameatx_np(temporaryDescriptor, "result.7z", parent.descriptor, finalURL.lastPathComponent, UInt32(RENAME_EXCL)) == 0 { break }
             let code = errno
             guard code == EEXIST else {
                 throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))

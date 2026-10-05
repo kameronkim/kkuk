@@ -134,6 +134,7 @@ final class AppModel: ObservableObject {
             case .unsupportedFileName: key = "Rename files containing line breaks, then choose the input again."
             case .unsupportedInput: key = "Choose a regular file or folder."
             case .engineUnavailable: key = "Reinstall the app, then try again."
+            case .unsafeDestination: key = "Move the source to a private folder, then try again."
             case .insufficientMemory: key = "Close other apps, then try again."
             case .sourceChanged: key = "Finish making changes to the source, then compress again."
             case .archiveContentsMismatch: key = "Choose the source again, then compress."

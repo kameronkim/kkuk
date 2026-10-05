@@ -60,3 +60,5 @@
 "Standard high compression" = "Standard high compression";
 "The original will be kept. Temporary archives will be removed before quitting." = "The original will be kept. Temporary archives will be removed before quitting.";
 "Verifying archive" = "Verifying archive";
+
+"Move the source to a private folder, then try again." = "Move the source to a private folder, then try again.";

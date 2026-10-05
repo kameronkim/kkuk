@@ -60,3 +60,5 @@
 "Standard high compression" = "일반 고압축";
 "The original will be kept. Temporary archives will be removed before quitting." = "원본은 유지됩니다. 압축 중이었다면 임시 파일을 정리한 뒤 종료합니다.";
 "Verifying archive" = "압축 파일 검사 중";
+
+"Move the source to a private folder, then try again." = "원본을 개인 폴더로 옮긴 뒤 다시 시도해 주세요.";
