@@ -83,9 +83,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             panel.contentView = hostingView
             panel.isReleasedWhenClosed = false
             panel.delegate = self
-            var frame = panel.frame
-            frame.size.height = panel.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 440, height: FinderProgressView.height(hasError: false))).height
-            panel.setFrame(frame, display: false)
             panel.center()
             progressWindow = panel
         }
