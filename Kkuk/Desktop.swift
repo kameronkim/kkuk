@@ -438,7 +438,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         fileMenu.addItem(withTitle: L10n.text("Choose File or Folder…"), action: #selector(openInput), keyEquivalent: "o")
         fileItem.submenu = fileMenu
         NSApplication.shared.mainMenu = menu
-        let service = FinderCompressionService(model: model) { [weak self] isNewRequest in self?.showServiceWindow(isNewRequest: isNewRequest) }
+        let service = FinderCompressionService(model: model, rejectInput: { [weak self] in self?.finishRejectedService() }) { [weak self] isNewRequest in self?.showServiceWindow(isNewRequest: isNewRequest) }
         finderService = service
         NSApplication.shared.servicesProvider = service
         // Services launch in the background; show their progress window only after receiving input.
@@ -524,6 +524,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .applicationIcon: NSApplication.shared.applicationIconImage as Any,
             .credits: NSAttributedString(string: L10n.text("Press down. Pack smaller.") + "\n7-Zip 26.03 © Igor Pavlov\nhttps://7-zip.org\n" + L10n.text("Licenses are included in the app’s Resources/Licenses folder."))
         ])
+    }
+    func finishRejectedService() {
+        // Return the Services error before ending a windowless background launch.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.window == nil, self.progressWindow == nil,
+                  !self.model.busy, self.model.acceptsNewInput else { return }
+            NSApplication.shared.terminate(nil)
+        }
     }
     private func finishSuccessfulService() {
         guard model.result != nil, !confirmingQuit, !waitingForTermination, !completionQuitScheduled else { return }
