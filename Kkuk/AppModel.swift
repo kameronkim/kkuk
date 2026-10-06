@@ -23,8 +23,7 @@ final class AppModel: ObservableObject {
     private var cancellationRequested = false
     var onTaskFinished: (() -> Void)?
     var onArchiveSucceeded: (() -> Void)?
-    private var completionSound: NSSound?
-    private(set) var completionSoundEndsAt = Date.distantPast
+    let completionSound = CompletionSoundPlayer()
 
     var engine: URL {
         Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/7zz")
@@ -103,10 +102,7 @@ final class AppModel: ObservableObject {
                     self.result = result; self.busy = false; self.job = nil; self.progress = nil
                     self.status = L10n.text("Compression and verification complete")
                     self.detail = Self.resultDetail(result)
-                    if let sound = NSSound(named: NSSound.Name("Glass")), sound.play() {
-                        self.completionSound = sound
-                        self.completionSoundEndsAt = Date().addingTimeInterval(sound.duration)
-                    }
+                    self.completionSound.play()
                     self.onTaskFinished?()
                     self.onArchiveSucceeded?()
                 }

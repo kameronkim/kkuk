@@ -129,8 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard model.result != nil, !confirmingQuit, !waitingForTermination, !completionQuitScheduled else { return }
         completionQuitScheduled = true
         model.acceptsNewInput = false
-        let delay = max(0, model.completionSoundEndsAt.timeIntervalSinceNow)
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        model.completionSound.whenFinished { [weak self] in
             self?.closeProgressWindow()
         }
     }
