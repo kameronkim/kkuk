@@ -509,7 +509,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         progressWindow.setFrame(frame, display: true)
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if model.busy { showServiceWindow(isNewRequest: false) }
+        if model.busy || !model.acceptsNewInput { showServiceWindow(isNewRequest: false) }
         else { showMainWindow() }
         return false
     }
