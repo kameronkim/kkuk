@@ -6,10 +6,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let model = AppModel()
     private var window: NSWindow?
     private var progressWindow: NSWindow?
-    private var closingProgress = false
-    private var confirmingQuit = false
-    private var waitingForTermination = false
-    private var completionQuitScheduled = false
+    private enum TerminationState {
+        case idle, confirming, waitingForSound, cancelling, requested
+    }
+    private var terminationState: TerminationState = .idle
     private var appIcon: NSImage?
     private var finderService: FinderCompressionService?
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -118,55 +118,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Return the Services error before ending a windowless background launch.
         DispatchQueue.main.async { [weak self] in
             guard let self, self.window == nil, self.progressWindow == nil,
-                  !self.model.busy, self.model.acceptsNewInput else { return }
-            NSApplication.shared.terminate(nil)
+                  !self.model.busy, self.model.acceptsNewInput, self.terminationState == .idle else { return }
+            self.closeProgressWindow()
         }
     }
     private func finishSuccessfulService() {
-        guard model.result != nil, !confirmingQuit, !waitingForTermination, !completionQuitScheduled else { return }
-        completionQuitScheduled = true
+        guard model.result != nil, terminationState == .idle else { return }
+        terminationState = .waitingForSound
         model.acceptsNewInput = false
         model.completionSound.whenFinished { [weak self] in
-            self?.closeProgressWindow()
+            guard let self, self.terminationState == .waitingForSound else { return }
+            self.closeProgressWindow()
         }
     }
     func closeProgressWindow() {
-        closingProgress = true
+        switch terminationState {
+        case .confirming, .cancelling, .requested: return
+        case .idle, .waitingForSound: break
+        }
+        terminationState = .requested
         model.acceptsNewInput = false
         NSApplication.shared.terminate(nil)
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if waitingForTermination { return .terminateLater }
-        if confirmingQuit { return .terminateCancel }
-        guard model.busy else { return .terminateNow }
+        switch terminationState {
+        case .cancelling: return .terminateLater
+        case .confirming: return .terminateCancel
+        case .idle, .waitingForSound, .requested: break
+        }
+        guard model.busy else {
+            terminationState = .requested
+            model.acceptsNewInput = false
+            return .terminateNow
+        }
         model.acceptsNewInput = false
-        if !closingProgress {
-            confirmingQuit = true
+        if terminationState != .requested {
+            let previousState = terminationState
+            terminationState = .confirming
             let alert = NSAlert()
             if let appIcon { alert.icon = appIcon.copy() as? NSImage }
             alert.messageText = L10n.text("Cancel the current task and quit?")
             alert.informativeText = L10n.text("The original will be kept. Temporary archives will be removed before quitting.")
             alert.addButton(withTitle: L10n.text("Keep Working")); alert.addButton(withTitle: L10n.text("Cancel and Quit"))
             let response = alert.runModal()
-            confirmingQuit = false
             guard response == .alertSecondButtonReturn else {
-                model.acceptsNewInput = true
+                terminationState = previousState
+                model.acceptsNewInput = previousState == .idle
                 if model.result != nil {
                     DispatchQueue.main.async { self.model.onArchiveSucceeded?() }
                 }
                 return .terminateCancel
             }
+            terminationState = .requested
         }
         if model.canCancel {
-            waitingForTermination = true
-            model.onTaskFinished = { [weak model] in
+            terminationState = .cancelling
+            model.onTaskFinished = { [weak self, weak model] in
                 model?.onTaskFinished = nil
+                self?.terminationState = .requested
                 sender.reply(toApplicationShouldTerminate: true)
             }
             model.cancel()
             return .terminateLater
         }
         // Analysis is read-only; no temporary archive exists yet.
+        terminationState = .requested
         return .terminateNow
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
