@@ -15,7 +15,7 @@ final class AppModel: ObservableObject {
     @Published var busy = false
     @Published var acceptsNewInput = true
     @Published var status = ""
-    @Published var detail = ""
+    var detail: String { result.map(Self.resultDetail) ?? "" }
     @Published var progress: Double?
     @Published var error: String?
     @Published var result: ArchiveResult?
@@ -53,7 +53,7 @@ final class AppModel: ObservableObject {
         // Six frames at 60 Hz; delay only the gauge, never the input metadata.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: gaugeTask)
         busy = true; error = nil; result = nil; snapshot = nil; preset = nil
-        status = ""; detail = ""; progress = nil
+        status = ""; progress = nil
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 let scanned = try InputScanner.scan(folder)
@@ -64,7 +64,6 @@ final class AppModel: ObservableObject {
                     self.snapshot = scanned; self.preset = selected; self.busy = false; self.scanning = false
                     self.selectedInput = scanned.input; self.selectedIsDirectory = scanned.isDirectory
                     self.status = L10n.text("Ready to compress")
-                    self.detail = ""
                     if compressWhenReady { self.start() }
                 }
             } catch {
@@ -79,7 +78,7 @@ final class AppModel: ObservableObject {
         self.job = job
         cancellationRequested = false
         busy = true; error = nil; result = nil; progress = nil
-        status = L10n.text("Preparing compression"); detail = ""
+        status = L10n.text("Preparing compression")
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 let current = try InputScanner.scan(input) { try job.runner.checkCancellation() }
@@ -90,9 +89,9 @@ final class AppModel: ObservableObject {
                         guard self.job === job, !self.cancellationRequested else { return }
                         self.progress = value
                         switch stage {
-                        case .compressing: self.status = L10n.text("Kkuk is compressing"); self.detail = ""
-                        case .verifying: self.status = L10n.text("Verifying archive"); self.detail = ""
-                        case .checkingContents: self.status = L10n.text("Checking archive contents"); self.detail = ""
+                        case .compressing: self.status = L10n.text("Kkuk is compressing")
+                        case .verifying: self.status = L10n.text("Verifying archive")
+                        case .checkingContents: self.status = L10n.text("Checking archive contents")
                         case .finished: break
                         }
                     }
@@ -101,7 +100,6 @@ final class AppModel: ObservableObject {
                     self.cancellationRequested = false
                     self.result = result; self.busy = false; self.job = nil; self.progress = nil
                     self.status = L10n.text("Compression and verification complete")
-                    self.detail = Self.resultDetail(result)
                     self.completionSound.play()
                     self.onTaskFinished?()
                     self.onArchiveSucceeded?()
@@ -114,7 +112,7 @@ final class AppModel: ObservableObject {
     func cancel() {
         guard let job, !cancellationRequested else { return }
         cancellationRequested = true
-        status = L10n.text("Canceling"); detail = ""
+        status = L10n.text("Canceling")
         job.cancel()
     }
     func fail(_ failure: Error) {
@@ -123,9 +121,9 @@ final class AppModel: ObservableObject {
         busy = false; scanning = false; progress = nil; job = nil
         cancellationRequested = false
         if let kkukError = failure as? KkukError, case .cancelled = kkukError {
-            error = nil; status = L10n.text("Canceled"); detail = ""
+            error = nil; status = L10n.text("Canceled")
         } else {
-            error = Self.userFacingError(failure); status = L10n.text("Could not compress."); detail = ""
+            error = Self.userFacingError(failure); status = L10n.text("Could not compress.")
         }
         onTaskFinished?()
     }
