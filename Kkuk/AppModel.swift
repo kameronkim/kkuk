@@ -73,7 +73,7 @@ final class AppModel: ObservableObject {
         }
     }
     func start() {
-        guard !busy, let snapshot else { return }
+        guard !busy, let input = snapshot?.input else { return }
         // Rescan immediately before execution instead of relying on stale selection metadata.
         let job = ArchiveJob(engine: engine)
         self.job = job
@@ -82,7 +82,7 @@ final class AppModel: ObservableObject {
         status = L10n.text("Preparing compression"); detail = ""
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let current = try InputScanner.scan(snapshot.input) { try job.runner.checkCancellation() }
+                let current = try InputScanner.scan(input) { try job.runner.checkCancellation() }
                 let preset = CompressionPreset.select(inputBytes: current.totalBytes, memoryBudgetBytes: MemoryBudget.current())
                 DispatchQueue.main.async { self.snapshot = current; self.preset = preset }
                 let result = try job.executeBesideInput(snapshot: current, preset: preset) { stage, value in
