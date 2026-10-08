@@ -62,3 +62,7 @@
 "Verifying archive" = "압축 파일 검사 중";
 
 "Move the source to a private folder, then try again." = "원본을 개인 폴더로 옮긴 뒤 다시 시도해 주세요.";
+
+"Choose one file or folder to compress." = "압축할 파일이나 폴더 하나를 선택해 주세요.";
+"Checking input…" = "입력 확인 중";
+"Close" = "닫기";

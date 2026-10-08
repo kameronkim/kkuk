@@ -1,187 +1,6 @@
 import AppKit
-import Darwin
 import SwiftUI
 import UniformTypeIdentifiers
-import KkukCore
-
-@MainActor
-final class AppModel: ObservableObject {
-    @Published var selectedInput: URL?
-    @Published var selectedIsDirectory = false
-    @Published var scanning = false
-    @Published var showsScanGauge = false
-    private var scanGaugeTask: DispatchWorkItem?
-    @Published var snapshot: InputSnapshot?
-    @Published var preset: CompressionPreset?
-    @Published var busy = false
-    @Published var status = ""
-    @Published var detail = ""
-    @Published var progress: Double?
-    @Published var error: String?
-    @Published var result: ArchiveResult?
-    private var job: ArchiveJob?
-    private var cancellationRequested = false
-    var onTaskFinished: (() -> Void)?
-
-    var engine: URL {
-        Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/7zz")
-    }
-    func chooseInput() {
-        guard !busy else { return }
-        let panel = NSOpenPanel()
-        panel.title = L10n.text("Choose a file or folder to compress")
-        panel.prompt = L10n.text("Choose")
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = true
-        panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url { analyze(url) }
-    }
-    func analyze(_ folder: URL) {
-        guard !busy else { return }
-        selectedInput = folder
-        selectedIsDirectory = (try? folder.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-        scanning = true
-        showsScanGauge = false
-        scanGaugeTask?.cancel()
-        let gaugeTask = DispatchWorkItem { [weak self] in
-            guard let self, self.scanning else { return }
-            self.showsScanGauge = true
-        }
-        scanGaugeTask = gaugeTask
-        // Six frames at 60 Hz; delay only the gauge, never the input metadata.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: gaugeTask)
-        busy = true; error = nil; result = nil; snapshot = nil; preset = nil
-        status = ""; detail = ""; progress = nil
-        DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                let scanned = try InputScanner.scan(folder)
-                let selected = CompressionPreset.select(inputBytes: scanned.totalBytes, memoryBudgetBytes: MemoryBudget.current())
-                DispatchQueue.main.async {
-                    self.scanGaugeTask?.cancel(); self.scanGaugeTask = nil
-                    self.showsScanGauge = false
-                    self.snapshot = scanned; self.preset = selected; self.busy = false; self.scanning = false
-                    self.selectedInput = scanned.input; self.selectedIsDirectory = scanned.isDirectory
-                    self.status = L10n.text("Ready to compress")
-                    self.detail = ""
-                }
-            } catch {
-                DispatchQueue.main.async { self.fail(error) }
-            }
-        }
-    }
-    func start() {
-        guard !busy, let snapshot else { return }
-        // Rescan immediately before execution instead of relying on stale selection metadata.
-        let job = ArchiveJob(engine: engine)
-        self.job = job
-        cancellationRequested = false
-        busy = true; error = nil; result = nil; progress = nil
-        status = L10n.text("Preparing compression"); detail = ""
-        DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                let current = try InputScanner.scan(snapshot.input) { try job.runner.checkCancellation() }
-                let preset = CompressionPreset.select(inputBytes: current.totalBytes, memoryBudgetBytes: MemoryBudget.current())
-                DispatchQueue.main.async { self.snapshot = current; self.preset = preset }
-                let result = try job.executeBesideInput(snapshot: current, preset: preset) { stage, value in
-                    DispatchQueue.main.async {
-                        guard self.job === job, !self.cancellationRequested else { return }
-                        self.progress = value
-                        switch stage {
-                        case .compressing: self.status = L10n.text("Kkuk is compressing"); self.detail = ""
-                        case .verifying: self.status = L10n.text("Verifying archive"); self.detail = ""
-                        case .checkingContents: self.status = L10n.text("Checking archive contents"); self.detail = ""
-                        case .finished: break
-                        }
-                    }
-                }
-                DispatchQueue.main.async {
-                    self.cancellationRequested = false
-                    self.result = result; self.busy = false; self.job = nil; self.progress = nil
-                    self.status = L10n.text("Compression and verification complete")
-                    self.detail = Self.resultDetail(result)
-                    self.onTaskFinished?()
-                }
-            } catch {
-                DispatchQueue.main.async { self.fail(error) }
-            }
-        }
-    }
-    func cancel() {
-        guard let job, !cancellationRequested else { return }
-        cancellationRequested = true
-        status = L10n.text("Canceling"); detail = ""
-        job.cancel()
-    }
-    func fail(_ failure: Error) {
-        scanGaugeTask?.cancel(); scanGaugeTask = nil
-        showsScanGauge = false
-        busy = false; scanning = false; progress = nil; job = nil
-        cancellationRequested = false
-        if let kkukError = failure as? KkukError, case .cancelled = kkukError {
-            error = nil; status = L10n.text("Canceled"); detail = ""
-        } else {
-            error = Self.userFacingError(failure); status = L10n.text("Could not compress."); detail = ""
-        }
-        onTaskFinished?()
-    }
-    static func userFacingError(_ failure: Error) -> String {
-        // Keep engine transcripts, file paths and error codes out of the interface.
-        if let error = failure as? KkukError {
-            let key: String
-            switch error {
-            case .inputMissing: key = "Choose a file or folder to compress."
-            case .systemRoot: key = "Choose a file or folder instead of the system root."
-            case .unsupportedFileName: key = "Rename files containing line breaks, then choose the input again."
-            case .unsupportedInput: key = "Choose a regular file or folder."
-            case .engineUnavailable: key = "Reinstall the app, then try again."
-            case .unsafeDestination: key = "Move the source to a private folder, then try again."
-            case .insufficientMemory: key = "Close other apps, then try again."
-            case .sourceChanged: key = "Finish making changes to the source, then compress again."
-            case .archiveContentsMismatch: key = "Choose the source again, then compress."
-            case .engineFailed: key = "Check the source and destination, then try again."
-            case .cancelled: key = "Canceled"
-            }
-            return L10n.text(key)
-        }
-        let error = failure as NSError
-        if error.domain == NSPOSIXErrorDomain {
-            switch Int32(error.code) {
-            case ENOSPC, EDQUOT: return L10n.text("Free up disk space, then try again.")
-            case EACCES, EPERM: return L10n.text("Check access permissions for the source and destination.")
-            case ENOENT, ENOTDIR: return L10n.text("Choose the source file or folder again.")
-            default: break
-            }
-        }
-        if error.domain == NSCocoaErrorDomain {
-            switch CocoaError.Code(rawValue: error.code) {
-            case .fileWriteOutOfSpace: return L10n.text("Free up disk space, then try again.")
-            case .fileReadNoPermission, .fileWriteNoPermission: return L10n.text("Check access permissions for the source and destination.")
-            case .fileNoSuchFile, .fileReadNoSuchFile: return L10n.text("Choose the source file or folder again.")
-            default: break
-            }
-        }
-        return L10n.text("Check the source and destination, then try again.")
-    }
-    func reveal() {
-        if let result { NSWorkspace.shared.activateFileViewerSelecting([result.url]) }
-    }
-    static func bytes(_ value: UInt64) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(clamping: value), countStyle: .file)
-    }
-    static func resultDetail(_ result: ArchiveResult) -> String {
-        let change: String
-        if result.originalBytes == 0 {
-            change = L10n.text("Empty item archived")
-        } else if result.archiveBytes > result.originalBytes {
-            change = L10n.text("Size increased slightly")
-        } else {
-            let percent = (1 - Double(result.archiveBytes) / Double(result.originalBytes)) * 100
-            change = L10n.format("%.1f%% smaller", percent)
-        }
-        return "\(bytes(result.originalBytes)) → \(bytes(result.archiveBytes)) · \(change)"
-    }
-    var canCancel: Bool { job != nil }
-}
 
 enum KkukTheme {
     static let background = Color(red: 18 / 255, green: 25 / 255, blue: 33 / 255)
@@ -300,7 +119,7 @@ struct CompressionView: View {
                     .overlay { if focusedControl == .target { Rectangle().stroke(KkukTheme.accent, lineWidth: 2) } }
                     .contentShape(Rectangle())
                     .opacity(model.busy && !model.scanning ? 0.7 : 1)
-            }.buttonStyle(InputRowStyle()).disabled(model.busy)
+            }.buttonStyle(InputRowStyle()).disabled(model.busy || !model.acceptsNewInput)
                 .focusable()
                 .focused($focusedControl, equals: .target)
                 .onHover { targetHovered = $0 }
@@ -324,7 +143,7 @@ struct CompressionView: View {
             .foregroundStyle(KkukTheme.text).background(KkukTheme.background)
             .preferredColorScheme(.dark)
             .onDrop(of: [UTType.fileURL.identifier], isTargeted: $dragging) { providers in
-                guard !model.busy, providers.count == 1, let provider = providers.first else { return false }
+                guard !model.busy, model.acceptsNewInput, providers.count == 1, let provider = providers.first else { return false }
                 provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
                     let url: URL?
                     if let data = item as? Data { url = URL(dataRepresentation: data, relativeTo: nil) }
@@ -369,7 +188,7 @@ struct CompressionView: View {
                         Button(L10n.text("Show in Finder"), action: model.reveal).buttonStyle(QuietActionStyle(focused: focusedControl == .operation))
                     } else {
                         Button(L10n.text("Compress"), action: model.start).buttonStyle(QuietActionStyle(focused: focusedControl == .operation))
-                            .disabled(model.snapshot == nil || model.busy).keyboardShortcut(.defaultAction)
+                            .disabled(model.snapshot == nil || model.busy || !model.acceptsNewInput).keyboardShortcut(.defaultAction)
                     }
                 }.focusable().focused($focusedControl, equals: .operation).frame(width: 112, alignment: .trailing)
             }.frame(height: 54, alignment: .top)
@@ -396,81 +215,5 @@ struct CompressionView: View {
                 Text("Kkuk · macOS").font(.system(size: 10, design: .monospaced)).foregroundStyle(KkukTheme.secondary)
             }
         }.padding(.top, 10)
-    }
-}
-
-@MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    let model = AppModel()
-    private var window: NSWindow?
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
-           let icon = NSImage(contentsOf: url) {
-            NSApplication.shared.applicationIconImage = icon
-        }
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 400),
-                              styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = L10n.text("Kkuk")
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.backgroundColor = NSColor(KkukTheme.background)
-        window.contentView = NSHostingView(rootView: CompressionView(model: model))
-        window.isReleasedWhenClosed = false
-        window.delegate = self
-        window.center(); window.makeKeyAndOrderFront(nil)
-        self.window = window
-        let menu = NSMenu()
-        let item = NSMenuItem(); menu.addItem(item)
-        let appMenu = NSMenu()
-        appMenu.addItem(withTitle: L10n.text("About Kkuk"), action: #selector(about), keyEquivalent: "")
-        appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: L10n.text("Quit Kkuk"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        item.submenu = appMenu
-        let fileItem = NSMenuItem(); menu.addItem(fileItem)
-        let fileMenu = NSMenu(title: L10n.text("File"))
-        fileMenu.addItem(withTitle: L10n.text("Choose File or Folder…"), action: #selector(openInput), keyEquivalent: "o")
-        fileItem.submenu = fileMenu
-        NSApplication.shared.mainMenu = menu
-        NSApplication.shared.activate(ignoringOtherApps: true)
-    }
-    @objc func openInput() { model.chooseInput() }
-    @objc func about() {
-        NSApplication.shared.orderFrontStandardAboutPanel(options: [
-            .applicationName: L10n.text("Kkuk"), .applicationVersion: "0.1.0",
-            .applicationIcon: NSApplication.shared.applicationIconImage as Any,
-            .credits: NSAttributedString(string: L10n.text("Press down. Pack smaller.") + "\n7-Zip 26.03 © Igor Pavlov\nhttps://7-zip.org\n" + L10n.text("Licenses are included in the app’s Resources/Licenses folder."))
-        ])
-    }
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard model.busy else { return .terminateNow }
-        let alert = NSAlert()
-        alert.messageText = L10n.text("Cancel the current task and quit?")
-        alert.informativeText = L10n.text("The original will be kept. Temporary archives will be removed before quitting.")
-        alert.addButton(withTitle: L10n.text("Keep Working")); alert.addButton(withTitle: L10n.text("Cancel and Quit"))
-        guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
-        if model.canCancel {
-            model.onTaskFinished = { [weak model] in
-                model?.onTaskFinished = nil
-                sender.reply(toApplicationShouldTerminate: true)
-            }
-            model.cancel()
-            return .terminateLater
-        }
-        // Analysis is read-only; no temporary archive exists yet.
-        return .terminateNow
-    }
-    func windowShouldClose(_ sender: NSWindow) -> Bool {
-        NSApplication.shared.terminate(nil)
-        return false
-    }
-}
-
-@main
-struct KkukApplication {
-    @MainActor static func main() {
-        let application = NSApplication.shared
-        application.setActivationPolicy(.regular)
-        let delegate = AppDelegate()
-        application.delegate = delegate
-        withExtendedLifetime(delegate) { application.run() }
     }
 }
