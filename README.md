@@ -14,6 +14,8 @@ Open `Kkuk.app` on an Apple Silicon Mac running macOS 26 or later. No separate 7
 2. Select **Compress**.
 3. When finished, select **Show in Finder**.
 
+You can also right-click a single file or folder in Finder and choose **Compress with Kkuk** to start compression immediately in a compact progress window.
+
 ## How it works
 
 - Prioritizes compression ratio; some inputs may take longer or barely shrink.

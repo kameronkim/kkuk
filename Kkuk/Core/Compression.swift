@@ -75,11 +75,11 @@ public struct InputSnapshot: Sendable {
 
 public enum InputScanner {
     public static func scan(_ input: URL, checkCancellation: () throws -> Void = {}) throws -> InputSnapshot {
-        let folder = input.standardizedFileURL.resolvingSymlinksInPath()
-        guard FileManager.default.fileExists(atPath: folder.path) else {
-            throw KkukError.inputMissing
-        }
-        guard folder.path != "/" else { throw KkukError.systemRoot }
+        let selected = input.standardizedFileURL
+        guard selected.path != "/" else { throw KkukError.systemRoot }
+        // Resolve ancestors, preserving a selected symbolic link and its output location.
+        let folder = selected.deletingLastPathComponent().resolvingSymlinksInPath()
+            .appendingPathComponent(selected.lastPathComponent)
         var entries: [InputEntry] = []
         var excludedPaths: [String] = []
         func visit(_ url: URL, path: String) throws {
@@ -90,7 +90,9 @@ public enum InputScanner {
             // Read type, identity and timestamps together without following symbolic links.
             var metadata = stat()
             guard lstat(url.path, &metadata) == 0 else {
-                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+                let code = errno
+                if url == folder && (code == ENOENT || code == ENOTDIR) { throw KkukError.inputMissing }
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
             }
             let type: FileAttributeType
             switch metadata.st_mode & mode_t(S_IFMT) {
