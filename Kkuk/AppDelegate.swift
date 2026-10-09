@@ -107,8 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     @objc func openInput() {
         guard model.canChooseInput else { showServiceWindow(isNewRequest: false); return }
-        showMainWindow()
-        model.chooseInput()
+        if model.chooseInput() { showMainWindow() }
     }
     @objc func about() {
         NSApplication.shared.orderFrontStandardAboutPanel(options: [

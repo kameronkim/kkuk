@@ -96,7 +96,7 @@ struct CompressionView: View {
                 Text(L10n.text("Compression priority")).font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(KkukTheme.secondary)
                     .padding(.top, 7)
             }.padding(.bottom, 26)
-            Button(action: model.chooseInput) {
+            Button(action: { model.chooseInput() }) {
                 HStack(spacing: 12) {
                     Image(systemName: model.selectedInput == nil ? "plus.square.dashed" : (model.selectedIsDirectory ? "folder.fill" : "doc.fill"))
                         .font(.system(size: 20)).foregroundStyle(KkukTheme.accent).frame(width: 24)

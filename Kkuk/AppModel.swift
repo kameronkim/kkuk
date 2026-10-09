@@ -51,15 +51,18 @@ final class AppModel: ObservableObject {
 
     var canChooseInput: Bool { !busy && acceptsNewInput && pendingFinderRequests.isEmpty }
 
-    func chooseInput() {
-        guard canChooseInput else { return }
+    @discardableResult
+    func chooseInput() -> Bool {
+        guard canChooseInput else { return false }
         let panel = NSOpenPanel()
         panel.title = L10n.text("Choose a file or folder to compress")
         panel.prompt = L10n.text("Choose")
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url { analyze(url) }
+        guard panel.runModal() == .OK, let url = panel.url, canChooseInput else { return false }
+        analyze(url)
+        return true
     }
     func analyze(_ folder: URL, compressWhenReady: Bool = false) {
         guard canChooseInput else { return }
