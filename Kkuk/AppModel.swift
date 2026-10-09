@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import SwiftUI
+import UniformTypeIdentifiers
 import KkukCore
 
 @MainActor
@@ -11,6 +12,7 @@ final class AppModel: ObservableObject {
     @Published var scanning = false
     @Published var showsScanGauge = false
     private var scanGaugeTask: DispatchWorkItem?
+    private var pendingInputRequest: UUID?
     @Published var snapshot: InputSnapshot?
     @Published var preset: CompressionPreset?
     @Published var busy = false
@@ -35,6 +37,7 @@ final class AppModel: ObservableObject {
     @discardableResult
     func enqueueFinderInputs(_ inputs: [URL]) -> Bool {
         guard acceptsNewInput, !inputs.isEmpty, inputs.allSatisfy(\.isFileURL) else { return false }
+        pendingInputRequest = nil
         pendingFinderRequests.append(inputs)
         if !busy, error == nil { resumeFinderQueue() }
         return true
@@ -52,8 +55,27 @@ final class AppModel: ObservableObject {
     var canChooseInput: Bool { !busy && acceptsNewInput && pendingFinderRequests.isEmpty }
 
     @discardableResult
+    func loadDroppedInput(_ provider: NSItemProvider) -> Bool {
+        guard canChooseInput else { return false }
+        let request = UUID()
+        pendingInputRequest = request
+        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { [weak self] item, _ in
+            let url: URL?
+            if let data = item as? Data { url = URL(dataRepresentation: data, relativeTo: nil) }
+            else if let value = item as? URL { url = value }
+            else { url = nil }
+            DispatchQueue.main.async {
+                guard let self, self.pendingInputRequest == request else { return }
+                self.pendingInputRequest = nil
+                if let url, url.isFileURL { self.analyze(url) }
+            }
+        }
+        return true
+    }
+    @discardableResult
     func chooseInput() -> Bool {
         guard canChooseInput else { return false }
+        pendingInputRequest = nil
         let panel = NSOpenPanel()
         panel.title = L10n.text("Choose a file or folder to compress")
         panel.prompt = L10n.text("Choose")
@@ -70,6 +92,7 @@ final class AppModel: ObservableObject {
     }
     private func analyzeInputs(_ inputs: [URL], compressWhenReady: Bool) {
         guard !busy, acceptsNewInput, let folder = inputs.first else { return }
+        pendingInputRequest = nil
         selectedInputCount = Set(inputs).count
         selectedInput = folder
         selectedIsDirectory = (try? folder.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
@@ -110,6 +133,7 @@ final class AppModel: ObservableObject {
     }
     private func start(inputs: [URL], freshSnapshot: InputSnapshot? = nil) {
         guard !busy else { return }
+        pendingInputRequest = nil
         let job = ArchiveJob(engine: engine)
         self.job = job
         cancellationRequested = false

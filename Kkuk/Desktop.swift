@@ -143,15 +143,8 @@ struct CompressionView: View {
             .foregroundStyle(KkukTheme.text).background(KkukTheme.background)
             .preferredColorScheme(.dark)
             .onDrop(of: [UTType.fileURL.identifier], isTargeted: $dragging) { providers in
-                guard model.canChooseInput, providers.count == 1, let provider = providers.first else { return false }
-                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                    let url: URL?
-                    if let data = item as? Data { url = URL(dataRepresentation: data, relativeTo: nil) }
-                    else if let value = item as? URL { url = value }
-                    else { url = nil }
-                    if let url, url.isFileURL { DispatchQueue.main.async { model.analyze(url) } }
-                }
-                return true
+                guard providers.count == 1, let provider = providers.first else { return false }
+                return model.loadDroppedInput(provider)
             }
     }
     private var inputMetadata: String {
