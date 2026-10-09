@@ -97,6 +97,7 @@ final class AppModel: ObservableObject {
                     self.selectedInputCount = scanned.inputs.count
                     self.status = L10n.text("Ready to compress")
                     if compressWhenReady { self.start(inputs: scanned.inputs, freshSnapshot: scanned) }
+                    else { self.resumeFinderQueue() }
                 }
             } catch {
                 DispatchQueue.main.async { self.fail(error) }

@@ -167,9 +167,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard response == .alertSecondButtonReturn else {
                 terminationState = previousState
                 model.acceptsNewInput = previousState == .idle
-                if model.result != nil {
+                if !model.busy, model.error == nil {
                     DispatchQueue.main.async {
-                        if !self.model.resumeFinderQueue() { self.model.onArchiveSucceeded?() }
+                        if !self.model.resumeFinderQueue(), self.model.result != nil { self.model.onArchiveSucceeded?() }
                     }
                 }
                 return .terminateCancel
