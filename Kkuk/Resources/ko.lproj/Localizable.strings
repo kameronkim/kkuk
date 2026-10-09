@@ -66,3 +66,7 @@
 "Choose one file or folder to compress." = "압축할 파일이나 폴더 하나를 선택해 주세요.";
 "Checking input…" = "입력 확인 중";
 "Close" = "닫기";
+
+"%d waiting" = "대기 %d개";
+"Continue queue" = "다음 작업 진행";
+"Cancel the current and queued tasks and quit?" = "진행 중인 작업과 대기 작업을 취소하고 종료할까요?";
