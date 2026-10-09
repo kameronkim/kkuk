@@ -66,3 +66,7 @@
 "Choose one file or folder to compress." = "Choose one file or folder to compress.";
 "Checking input…" = "Checking input…";
 "Close" = "Close";
+
+"%d waiting" = "%d waiting";
+"Continue queue" = "Continue queue";
+"Cancel the current and queued tasks and quit?" = "Cancel the current and queued tasks and quit?";

@@ -21,6 +21,8 @@ final class AppModel: ObservableObject {
     @Published var result: ArchiveResult?
     private var job: ArchiveJob?
     private var cancellationRequested = false
+    @Published private(set) var pendingFinderInputs: [URL] = []
+    var onFinderTaskStarted: (() -> Void)?
     var onTaskFinished: (() -> Void)?
     var onArchiveSucceeded: (() -> Void)?
     let completionSound = CompletionSoundPlayer()
@@ -28,6 +30,24 @@ final class AppModel: ObservableObject {
     var engine: URL {
         Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/7zz")
     }
+    // Only URLs wait in the queue. Scan and choose a memory budget at execution time.
+    @discardableResult
+    func enqueueFinderInput(_ input: URL) -> Bool {
+        guard acceptsNewInput else { return false }
+        pendingFinderInputs.append(input)
+        if !busy, error == nil { resumeFinderQueue() }
+        return true
+    }
+    @discardableResult
+    func resumeFinderQueue() -> Bool {
+        guard !busy, acceptsNewInput, !pendingFinderInputs.isEmpty else { return false }
+        let input = pendingFinderInputs.removeFirst()
+        analyze(input, compressWhenReady: true)
+        onFinderTaskStarted?()
+        return true
+    }
+    func discardFinderQueue() { pendingFinderInputs.removeAll() }
+
     func chooseInput() {
         guard !busy, acceptsNewInput else { return }
         let panel = NSOpenPanel()
@@ -100,8 +120,9 @@ final class AppModel: ObservableObject {
                     self.cancellationRequested = false
                     self.result = result; self.busy = false; self.job = nil; self.progress = nil
                     self.status = L10n.text("Compression and verification complete")
-                    self.completionSound.play()
                     self.onTaskFinished?()
+                    if self.resumeFinderQueue() { return }
+                    self.completionSound.play()
                     self.onArchiveSucceeded?()
                 }
             } catch {
