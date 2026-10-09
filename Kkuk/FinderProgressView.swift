@@ -22,6 +22,11 @@ struct FinderProgressView: View {
                         .font(.system(size: 12, weight: .semibold))
                         .lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 0)
+                    if !model.pendingFinderInputs.isEmpty {
+                        Text(L10n.format("%d waiting", model.pendingFinderInputs.count))
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(KkukTheme.secondary)
+                    }
                     Button(action: close) { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(.plain).foregroundStyle(KkukTheme.secondary)
                         .help(L10n.text(model.busy ? "Cancel and Quit" : "Close"))
@@ -41,6 +46,9 @@ struct FinderProgressView: View {
                         Text("\(Int(min(max(progress, 0), 1) * 100))%")
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(KkukTheme.secondary)
+                    } else if !model.busy, !model.pendingFinderInputs.isEmpty {
+                        Button(L10n.text("Continue queue")) { model.resumeFinderQueue() }
+                            .buttonStyle(.plain).font(.system(size: 10))
                     } else if !model.busy, model.result != nil {
                         Button(L10n.text("Show in Finder"), action: model.reveal)
                             .buttonStyle(.plain).font(.system(size: 10))
