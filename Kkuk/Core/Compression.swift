@@ -59,9 +59,6 @@ public struct InputSnapshot: Sendable {
     public let totalBytes: UInt64
     public let fileCount: Int
 
-    init(input: URL, entries: [InputEntry], excludedPaths: [String]) {
-        self.init(inputs: [input], entries: entries, excludedPaths: excludedPaths)
-    }
     init(inputs: [URL], entries: [InputEntry], excludedPaths: [String]) {
         self.input = inputs[0]
         self.inputs = inputs
@@ -89,6 +86,7 @@ public enum InputScanner {
             try checkCancellation()
             guard input.isFileURL else { throw KkukError.inputMissing }
             let selected = input.standardizedFileURL
+            // Resolve ancestors, preserving a selected symbolic link and its output location.
             let normalized = selected.deletingLastPathComponent().resolvingSymlinksInPath()
                 .appendingPathComponent(selected.lastPathComponent)
             if seen.insert(normalized).inserted { selections.append(normalized) }
@@ -97,21 +95,22 @@ public enum InputScanner {
         guard selections.allSatisfy({ $0.deletingLastPathComponent() == parent }) else {
             throw KkukError.differentInputLocations
         }
-        if selections.count == 1 { return try scan(selections[0], checkCancellation: checkCancellation) }
-        let snapshots = try selections.map { try scan($0, checkCancellation: checkCancellation) }
-        return InputSnapshot(inputs: selections,
-                             entries: snapshots.flatMap(\.entries).sorted { $0.path < $1.path },
-                             excludedPaths: snapshots.flatMap(\.excludedPaths).sorted())
+        var entries: [InputEntry] = []
+        var excludedPaths: [String] = []
+        for selected in selections {
+            try collect(selected, entries: &entries, excludedPaths: &excludedPaths, checkCancellation: checkCancellation)
+        }
+        return InputSnapshot(inputs: selections, entries: entries.sorted { $0.path < $1.path },
+                             excludedPaths: excludedPaths.sorted())
     }
 
     public static func scan(_ input: URL, checkCancellation: () throws -> Void = {}) throws -> InputSnapshot {
-        let selected = input.standardizedFileURL
-        guard selected.path != "/" else { throw KkukError.systemRoot }
-        // Resolve ancestors, preserving a selected symbolic link and its output location.
-        let folder = selected.deletingLastPathComponent().resolvingSymlinksInPath()
-            .appendingPathComponent(selected.lastPathComponent)
-        var entries: [InputEntry] = []
-        var excludedPaths: [String] = []
+        try scanInputs([input], checkCancellation: checkCancellation)
+    }
+
+    private static func collect(_ folder: URL, entries: inout [InputEntry], excludedPaths: inout [String],
+                                checkCancellation: () throws -> Void) throws {
+        guard folder.path != "/" else { throw KkukError.systemRoot }
         func visit(_ url: URL, path: String) throws {
             try checkCancellation()
             guard !path.contains("\n"), !path.contains("\r") else {
@@ -159,7 +158,6 @@ public enum InputScanner {
             }
         }
         try visit(folder, path: folder.lastPathComponent)
-        return InputSnapshot(input: folder, entries: entries.sorted { $0.path < $1.path }, excludedPaths: excludedPaths.sorted())
     }
 }
 
