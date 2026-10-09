@@ -49,8 +49,10 @@ final class AppModel: ObservableObject {
     }
     func discardFinderQueue() { pendingFinderRequests.removeAll() }
 
+    var canChooseInput: Bool { !busy && acceptsNewInput && pendingFinderRequests.isEmpty }
+
     func chooseInput() {
-        guard !busy, acceptsNewInput else { return }
+        guard canChooseInput else { return }
         let panel = NSOpenPanel()
         panel.title = L10n.text("Choose a file or folder to compress")
         panel.prompt = L10n.text("Choose")
@@ -60,6 +62,7 @@ final class AppModel: ObservableObject {
         if panel.runModal() == .OK, let url = panel.url { analyze(url) }
     }
     func analyze(_ folder: URL, compressWhenReady: Bool = false) {
+        guard canChooseInput else { return }
         analyzeInputs([folder], compressWhenReady: compressWhenReady)
     }
     func analyzeInputs(_ inputs: [URL], compressWhenReady: Bool = false) {

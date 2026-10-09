@@ -106,7 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return false
     }
     @objc func openInput() {
-        guard !model.busy, model.acceptsNewInput else { showServiceWindow(isNewRequest: false); return }
+        guard model.canChooseInput else { showServiceWindow(isNewRequest: false); return }
         showMainWindow()
         model.chooseInput()
     }

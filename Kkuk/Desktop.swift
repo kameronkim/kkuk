@@ -119,7 +119,7 @@ struct CompressionView: View {
                     .overlay { if focusedControl == .target { Rectangle().stroke(KkukTheme.accent, lineWidth: 2) } }
                     .contentShape(Rectangle())
                     .opacity(model.busy && !model.scanning ? 0.7 : 1)
-            }.buttonStyle(InputRowStyle()).disabled(model.busy || !model.acceptsNewInput)
+            }.buttonStyle(InputRowStyle()).disabled(!model.canChooseInput)
                 .focusable()
                 .focused($focusedControl, equals: .target)
                 .onHover { targetHovered = $0 }
@@ -143,7 +143,7 @@ struct CompressionView: View {
             .foregroundStyle(KkukTheme.text).background(KkukTheme.background)
             .preferredColorScheme(.dark)
             .onDrop(of: [UTType.fileURL.identifier], isTargeted: $dragging) { providers in
-                guard !model.busy, model.acceptsNewInput, providers.count == 1, let provider = providers.first else { return false }
+                guard model.canChooseInput, providers.count == 1, let provider = providers.first else { return false }
                 provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
                     let url: URL?
                     if let data = item as? Data { url = URL(dataRepresentation: data, relativeTo: nil) }
