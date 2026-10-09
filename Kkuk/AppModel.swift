@@ -22,7 +22,7 @@ final class AppModel: ObservableObject {
     @Published var result: ArchiveResult?
     private var job: ArchiveJob?
     private var cancellationRequested = false
-    @Published private(set) var pendingFinderInputs: [URL] = []
+    @Published private(set) var pendingFinderRequests: [[URL]] = []
     var onFinderTaskStarted: (() -> Void)?
     var onTaskFinished: (() -> Void)?
     var onArchiveSucceeded: (() -> Void)?
@@ -33,21 +33,21 @@ final class AppModel: ObservableObject {
     }
     // Only URLs wait in the queue. Scan and choose a memory budget at execution time.
     @discardableResult
-    func enqueueFinderInput(_ input: URL) -> Bool {
-        guard acceptsNewInput else { return false }
-        pendingFinderInputs.append(input)
+    func enqueueFinderInputs(_ inputs: [URL]) -> Bool {
+        guard acceptsNewInput, !inputs.isEmpty, inputs.allSatisfy(\.isFileURL) else { return false }
+        pendingFinderRequests.append(inputs)
         if !busy, error == nil { resumeFinderQueue() }
         return true
     }
     @discardableResult
     func resumeFinderQueue() -> Bool {
-        guard !busy, acceptsNewInput, !pendingFinderInputs.isEmpty else { return false }
-        let input = pendingFinderInputs.removeFirst()
-        analyze(input, compressWhenReady: true)
+        guard !busy, acceptsNewInput, !pendingFinderRequests.isEmpty else { return false }
+        let inputs = pendingFinderRequests.removeFirst()
+        analyzeInputs(inputs, compressWhenReady: true)
         onFinderTaskStarted?()
         return true
     }
-    func discardFinderQueue() { pendingFinderInputs.removeAll() }
+    func discardFinderQueue() { pendingFinderRequests.removeAll() }
 
     func chooseInput() {
         guard !busy, acceptsNewInput else { return }

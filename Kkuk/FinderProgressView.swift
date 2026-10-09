@@ -13,17 +13,17 @@ struct FinderProgressView: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: model.selectedIsDirectory ? "folder.fill" : "doc.fill")
+            Image(systemName: model.selectedInputCount > 1 ? "doc.on.doc.fill" : (model.selectedIsDirectory ? "folder.fill" : "doc.fill"))
                 .font(.system(size: 24)).foregroundStyle(KkukTheme.secondary)
                 .frame(width: 28).padding(.top, 13)
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
-                    Text(model.selectedInput?.lastPathComponent ?? L10n.text("Kkuk"))
+                    Text(model.selectedInputCount > 1 ? L10n.format("%d items", model.selectedInputCount) : (model.selectedInput?.lastPathComponent ?? L10n.text("Kkuk")))
                         .font(.system(size: 12, weight: .semibold))
                         .lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 0)
-                    if !model.pendingFinderInputs.isEmpty {
-                        Text(L10n.format("%d waiting", model.pendingFinderInputs.count))
+                    if !model.pendingFinderRequests.isEmpty {
+                        Text(L10n.format("%d waiting", model.pendingFinderRequests.count))
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(KkukTheme.secondary)
                     }
@@ -46,7 +46,7 @@ struct FinderProgressView: View {
                         Text("\(Int(min(max(progress, 0), 1) * 100))%")
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(KkukTheme.secondary)
-                    } else if !model.busy, !model.pendingFinderInputs.isEmpty {
+                    } else if !model.busy, !model.pendingFinderRequests.isEmpty {
                         Button(L10n.text("Continue queue")) { model.resumeFinderQueue() }
                             .buttonStyle(.plain).font(.system(size: 10))
                     } else if !model.busy, model.result != nil {

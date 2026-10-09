@@ -171,7 +171,7 @@ struct CompressionView: View {
                 .frame(height: 2).padding(.top, 20).padding(.bottom, 14)
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 5) {
-                    if !model.status.isEmpty { Text(model.status + (model.pendingFinderInputs.isEmpty ? "" : " · " + L10n.format("%d waiting", model.pendingFinderInputs.count))).font(.system(size: 13, weight: .semibold)) }
+                    if !model.status.isEmpty { Text(model.status + (model.pendingFinderRequests.isEmpty ? "" : " · " + L10n.format("%d waiting", model.pendingFinderRequests.count))).font(.system(size: 13, weight: .semibold)) }
                     if let error = model.error {
                         Text(error).font(.system(size: 11)).foregroundStyle(KkukTheme.secondary)
                             .fixedSize(horizontal: false, vertical: true).lineLimit(2)
@@ -184,7 +184,7 @@ struct CompressionView: View {
                 Group {
                     if model.busy && !model.scanning {
                         if model.canCancel { Button(L10n.text("Cancel"), action: model.cancel).buttonStyle(QuietActionStyle(secondary: true, focused: focusedControl == .operation)) }
-                    } else if !model.pendingFinderInputs.isEmpty {
+                    } else if !model.pendingFinderRequests.isEmpty {
                         Button(L10n.text("Continue queue")) { model.resumeFinderQueue() }.buttonStyle(QuietActionStyle(focused: focusedControl == .operation))
                     } else if model.result != nil {
                         Button(L10n.text("Show in Finder"), action: model.reveal).buttonStyle(QuietActionStyle(focused: focusedControl == .operation))
