@@ -97,6 +97,7 @@ public enum InputScanner {
         guard selections.allSatisfy({ $0.deletingLastPathComponent() == parent }) else {
             throw KkukError.differentInputLocations
         }
+        if selections.count == 1 { return try scan(selections[0], checkCancellation: checkCancellation) }
         let snapshots = try selections.map { try scan($0, checkCancellation: checkCancellation) }
         return InputSnapshot(inputs: selections,
                              entries: snapshots.flatMap(\.entries).sorted { $0.path < $1.path },
