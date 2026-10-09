@@ -99,14 +99,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         progressWindow.setFrame(frame, display: true)
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if model.busy || !model.acceptsNewInput { showServiceWindow(isNewRequest: false) }
+        if model.busy || !model.acceptsNewInput || progressWindow?.isVisible == true || progressWindow?.isMiniaturized == true {
+            showServiceWindow(isNewRequest: false)
+        }
         else { showMainWindow() }
         return false
     }
     @objc func openInput() {
-        guard !model.busy, model.acceptsNewInput else { showServiceWindow(isNewRequest: false); return }
-        showMainWindow()
-        model.chooseInput()
+        guard model.canChooseInput else { showServiceWindow(isNewRequest: false); return }
+        if model.chooseInput() { showMainWindow() }
     }
     @objc func about() {
         NSApplication.shared.orderFrontStandardAboutPanel(options: [
@@ -166,9 +167,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard response == .alertSecondButtonReturn else {
                 terminationState = previousState
                 model.acceptsNewInput = previousState == .idle
-                if model.result != nil {
+                if !model.busy, model.error == nil {
                     DispatchQueue.main.async {
-                        if !self.model.resumeFinderQueue() { self.model.onArchiveSucceeded?() }
+                        if !self.model.resumeFinderQueue() { self.model.finishCompletedWork() }
                     }
                 }
                 return .terminateCancel

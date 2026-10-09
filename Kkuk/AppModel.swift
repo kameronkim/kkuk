@@ -1,25 +1,27 @@
 import AppKit
 import Darwin
 import SwiftUI
+import UniformTypeIdentifiers
 import KkukCore
 
 @MainActor
 final class AppModel: ObservableObject {
-    @Published var selectedInputCount = 1
-    @Published var selectedInput: URL?
-    @Published var selectedIsDirectory = false
-    @Published var scanning = false
-    @Published var showsScanGauge = false
+    @Published private(set) var selectedInputCount = 1
+    @Published private(set) var selectedInput: URL?
+    @Published private(set) var selectedIsDirectory = false
+    @Published private(set) var scanning = false
+    @Published private(set) var showsScanGauge = false
     private var scanGaugeTask: DispatchWorkItem?
-    @Published var snapshot: InputSnapshot?
-    @Published var preset: CompressionPreset?
-    @Published var busy = false
+    private var pendingInputRequest: UUID?
+    @Published private(set) var snapshot: InputSnapshot?
+    @Published private(set) var preset: CompressionPreset?
+    @Published private(set) var busy = false
     @Published var acceptsNewInput = true
-    @Published var status = ""
+    @Published private(set) var status = ""
     var detail: String { result.map(Self.resultDetail) ?? "" }
-    @Published var progress: Double?
-    @Published var error: String?
-    @Published var result: ArchiveResult?
+    @Published private(set) var progress: Double?
+    @Published private(set) var error: String?
+    @Published private(set) var result: ArchiveResult?
     private var job: ArchiveJob?
     private var cancellationRequested = false
     @Published private(set) var pendingFinderRequests: [[URL]] = []
@@ -35,6 +37,7 @@ final class AppModel: ObservableObject {
     @discardableResult
     func enqueueFinderInputs(_ inputs: [URL]) -> Bool {
         guard acceptsNewInput, !inputs.isEmpty, inputs.allSatisfy(\.isFileURL) else { return false }
+        pendingInputRequest = nil
         pendingFinderRequests.append(inputs)
         if !busy, error == nil { resumeFinderQueue() }
         return true
@@ -49,21 +52,47 @@ final class AppModel: ObservableObject {
     }
     func discardFinderQueue() { pendingFinderRequests.removeAll() }
 
-    func chooseInput() {
-        guard !busy, acceptsNewInput else { return }
+    var canChooseInput: Bool { !busy && acceptsNewInput && pendingFinderRequests.isEmpty }
+
+    @discardableResult
+    func loadDroppedInput(_ provider: NSItemProvider) -> Bool {
+        guard canChooseInput else { return false }
+        let request = UUID()
+        pendingInputRequest = request
+        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { [weak self] item, _ in
+            let url: URL?
+            if let data = item as? Data { url = URL(dataRepresentation: data, relativeTo: nil) }
+            else if let value = item as? URL { url = value }
+            else { url = nil }
+            DispatchQueue.main.async {
+                guard let self, self.pendingInputRequest == request else { return }
+                self.pendingInputRequest = nil
+                if let url, url.isFileURL { self.analyze(url) }
+            }
+        }
+        return true
+    }
+    @discardableResult
+    func chooseInput() -> Bool {
+        guard canChooseInput else { return false }
+        pendingInputRequest = nil
         let panel = NSOpenPanel()
         panel.title = L10n.text("Choose a file or folder to compress")
         panel.prompt = L10n.text("Choose")
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url { analyze(url) }
+        guard panel.runModal() == .OK, let url = panel.url, canChooseInput else { return false }
+        analyze(url)
+        return true
     }
-    func analyze(_ folder: URL, compressWhenReady: Bool = false) {
-        analyzeInputs([folder], compressWhenReady: compressWhenReady)
+    func analyze(_ input: URL) {
+        guard canChooseInput else { return }
+        analyzeInputs([input], compressWhenReady: false)
     }
-    func analyzeInputs(_ inputs: [URL], compressWhenReady: Bool = false) {
+    private func analyzeInputs(_ inputs: [URL], compressWhenReady: Bool) {
         guard !busy, acceptsNewInput, let folder = inputs.first else { return }
+        pendingInputRequest = nil
         selectedInputCount = Set(inputs).count
         selectedInput = folder
         selectedIsDirectory = (try? folder.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
@@ -88,8 +117,10 @@ final class AppModel: ObservableObject {
                     self.showsScanGauge = false
                     self.snapshot = scanned; self.preset = selected; self.busy = false; self.scanning = false
                     self.selectedInput = scanned.input; self.selectedIsDirectory = scanned.isDirectory
+                    self.selectedInputCount = scanned.inputs.count
                     self.status = L10n.text("Ready to compress")
-                    if compressWhenReady { self.start() }
+                    if compressWhenReady { self.start(inputs: scanned.inputs, freshSnapshot: scanned) }
+                    else { self.resumeFinderQueue() }
                 }
             } catch {
                 DispatchQueue.main.async { self.fail(error) }
@@ -98,7 +129,11 @@ final class AppModel: ObservableObject {
     }
     func start() {
         guard !busy, let inputs = snapshot?.inputs else { return }
-        // Rescan immediately before execution instead of relying on stale selection metadata.
+        start(inputs: inputs)
+    }
+    private func start(inputs: [URL], freshSnapshot: InputSnapshot? = nil) {
+        guard !busy else { return }
+        pendingInputRequest = nil
         let job = ArchiveJob(engine: engine)
         self.job = job
         cancellationRequested = false
@@ -106,7 +141,9 @@ final class AppModel: ObservableObject {
         status = L10n.text("Preparing compression")
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let current = try InputScanner.scanInputs(inputs) { try job.runner.checkCancellation() }
+                try job.runner.checkCancellation()
+                // Automatic Finder jobs just scanned; manual starts need fresh metadata.
+                let current = try freshSnapshot ?? InputScanner.scanInputs(inputs) { try job.runner.checkCancellation() }
                 let preset = CompressionPreset.select(inputBytes: current.totalBytes, memoryBudgetBytes: MemoryBudget.current())
                 DispatchQueue.main.async { self.snapshot = current; self.preset = preset }
                 let result = try job.executeBesideInput(snapshot: current, preset: preset) { stage, value in
@@ -127,13 +164,17 @@ final class AppModel: ObservableObject {
                     self.status = L10n.text("Compression and verification complete")
                     self.onTaskFinished?()
                     if self.resumeFinderQueue() { return }
-                    self.completionSound.play()
-                    self.onArchiveSucceeded?()
+                    self.finishCompletedWork()
                 }
             } catch {
                 DispatchQueue.main.async { self.fail(error) }
             }
         }
+    }
+    func finishCompletedWork() {
+        guard !busy, acceptsNewInput, result != nil, pendingFinderRequests.isEmpty else { return }
+        completionSound.play()
+        onArchiveSucceeded?()
     }
     func cancel() {
         guard let job, !cancellationRequested else { return }
