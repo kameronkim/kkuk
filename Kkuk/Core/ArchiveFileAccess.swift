@@ -151,8 +151,8 @@ enum ArchiveFileAccess {
         if limit < 0 && code != 0 { throw NSError(domain: NSPOSIXErrorDomain, code: Int(code)) }
         return limit > 0 ? Int(limit) : 255
     }
-    static func writePrivateList(_ contents: String, directoryDescriptor: Int32) throws {
-        let descriptor = openat(directoryDescriptor, "excluded-paths.txt",
+    static func writePrivateList(_ contents: String, directoryDescriptor: Int32, name: String = "excluded-paths.txt") throws {
+        let descriptor = openat(directoryDescriptor, name,
                                 O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         defer { close(descriptor) }

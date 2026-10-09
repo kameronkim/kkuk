@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         fileMenu.addItem(withTitle: L10n.text("Choose File or Folder…"), action: #selector(openInput), keyEquivalent: "o")
         fileItem.submenu = fileMenu
         NSApplication.shared.mainMenu = menu
+        model.onFinderTaskStarted = { [weak self] in self?.showServiceWindow(isNewRequest: true) }
         let service = FinderCompressionService(model: model, rejectInput: { [weak self] in self?.finishRejectedService() }) { [weak self] isNewRequest in self?.showServiceWindow(isNewRequest: isNewRequest) }
         finderService = service
         NSApplication.shared.servicesProvider = service
@@ -98,14 +99,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         progressWindow.setFrame(frame, display: true)
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if model.busy || !model.acceptsNewInput { showServiceWindow(isNewRequest: false) }
+        if model.busy || !model.acceptsNewInput || progressWindow?.isVisible == true || progressWindow?.isMiniaturized == true {
+            showServiceWindow(isNewRequest: false)
+        }
         else { showMainWindow() }
         return false
     }
     @objc func openInput() {
-        guard !model.busy, model.acceptsNewInput else { showServiceWindow(isNewRequest: false); return }
-        showMainWindow()
-        model.chooseInput()
+        guard model.canChooseInput else { showServiceWindow(isNewRequest: false); return }
+        if model.chooseInput() { showMainWindow() }
     }
     @objc func about() {
         NSApplication.shared.orderFrontStandardAboutPanel(options: [
@@ -123,7 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
     private func finishSuccessfulService() {
-        guard model.result != nil, terminationState == .idle else { return }
+        guard model.result != nil, model.pendingFinderRequests.isEmpty, terminationState == .idle else { return }
         terminationState = .waitingForSound
         model.acceptsNewInput = false
         model.completionSound.whenFinished { [weak self] in
@@ -149,6 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard model.busy else {
             terminationState = .requested
             model.acceptsNewInput = false
+            model.discardFinderQueue()
             return .terminateNow
         }
         model.acceptsNewInput = false
@@ -157,20 +160,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             terminationState = .confirming
             let alert = NSAlert()
             if let appIcon { alert.icon = appIcon.copy() as? NSImage }
-            alert.messageText = L10n.text("Cancel the current task and quit?")
+            alert.messageText = L10n.text(model.pendingFinderRequests.isEmpty ? "Cancel the current task and quit?" : "Cancel the current and queued tasks and quit?")
             alert.informativeText = L10n.text("The original will be kept. Temporary archives will be removed before quitting.")
             alert.addButton(withTitle: L10n.text("Keep Working")); alert.addButton(withTitle: L10n.text("Cancel and Quit"))
             let response = alert.runModal()
             guard response == .alertSecondButtonReturn else {
                 terminationState = previousState
                 model.acceptsNewInput = previousState == .idle
-                if model.result != nil {
-                    DispatchQueue.main.async { self.model.onArchiveSucceeded?() }
+                if !model.busy, model.error == nil {
+                    DispatchQueue.main.async {
+                        if !self.model.resumeFinderQueue() { self.model.finishCompletedWork() }
+                    }
                 }
                 return .terminateCancel
             }
             terminationState = .requested
         }
+        model.discardFinderQueue()
         if model.canCancel {
             terminationState = .cancelling
             model.onTaskFinished = { [weak self, weak model] in

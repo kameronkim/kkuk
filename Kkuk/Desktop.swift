@@ -96,7 +96,7 @@ struct CompressionView: View {
                 Text(L10n.text("Compression priority")).font(.system(size: 10, weight: .medium, design: .monospaced)).foregroundStyle(KkukTheme.secondary)
                     .padding(.top, 7)
             }.padding(.bottom, 26)
-            Button(action: model.chooseInput) {
+            Button(action: { model.chooseInput() }) {
                 HStack(spacing: 12) {
                     Image(systemName: model.selectedInput == nil ? "plus.square.dashed" : (model.selectedIsDirectory ? "folder.fill" : "doc.fill"))
                         .font(.system(size: 20)).foregroundStyle(KkukTheme.accent).frame(width: 24)
@@ -119,7 +119,7 @@ struct CompressionView: View {
                     .overlay { if focusedControl == .target { Rectangle().stroke(KkukTheme.accent, lineWidth: 2) } }
                     .contentShape(Rectangle())
                     .opacity(model.busy && !model.scanning ? 0.7 : 1)
-            }.buttonStyle(InputRowStyle()).disabled(model.busy || !model.acceptsNewInput)
+            }.buttonStyle(InputRowStyle()).disabled(!model.canChooseInput)
                 .focusable()
                 .focused($focusedControl, equals: .target)
                 .onHover { targetHovered = $0 }
@@ -143,15 +143,8 @@ struct CompressionView: View {
             .foregroundStyle(KkukTheme.text).background(KkukTheme.background)
             .preferredColorScheme(.dark)
             .onDrop(of: [UTType.fileURL.identifier], isTargeted: $dragging) { providers in
-                guard !model.busy, model.acceptsNewInput, providers.count == 1, let provider = providers.first else { return false }
-                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                    let url: URL?
-                    if let data = item as? Data { url = URL(dataRepresentation: data, relativeTo: nil) }
-                    else if let value = item as? URL { url = value }
-                    else { url = nil }
-                    if let url, url.isFileURL { DispatchQueue.main.async { model.analyze(url) } }
-                }
-                return true
+                guard providers.count == 1, let provider = providers.first else { return false }
+                return model.loadDroppedInput(provider)
             }
     }
     private var inputMetadata: String {
@@ -171,7 +164,7 @@ struct CompressionView: View {
                 .frame(height: 2).padding(.top, 20).padding(.bottom, 14)
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 5) {
-                    if !model.status.isEmpty { Text(model.status).font(.system(size: 13, weight: .semibold)) }
+                    if !model.status.isEmpty { Text(model.status + (model.pendingFinderRequests.isEmpty ? "" : " · " + L10n.format("%d waiting", model.pendingFinderRequests.count))).font(.system(size: 13, weight: .semibold)) }
                     if let error = model.error {
                         Text(error).font(.system(size: 11)).foregroundStyle(KkukTheme.secondary)
                             .fixedSize(horizontal: false, vertical: true).lineLimit(2)
@@ -184,6 +177,8 @@ struct CompressionView: View {
                 Group {
                     if model.busy && !model.scanning {
                         if model.canCancel { Button(L10n.text("Cancel"), action: model.cancel).buttonStyle(QuietActionStyle(secondary: true, focused: focusedControl == .operation)) }
+                    } else if !model.pendingFinderRequests.isEmpty {
+                        Button(L10n.text("Continue queue")) { model.resumeFinderQueue() }.buttonStyle(QuietActionStyle(focused: focusedControl == .operation))
                     } else if model.result != nil {
                         Button(L10n.text("Show in Finder"), action: model.reveal).buttonStyle(QuietActionStyle(focused: focusedControl == .operation))
                     } else {
