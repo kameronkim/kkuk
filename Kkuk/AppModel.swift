@@ -91,6 +91,7 @@ final class AppModel: ObservableObject {
                     self.showsScanGauge = false
                     self.snapshot = scanned; self.preset = selected; self.busy = false; self.scanning = false
                     self.selectedInput = scanned.input; self.selectedIsDirectory = scanned.isDirectory
+                    self.selectedInputCount = scanned.inputs.count
                     self.status = L10n.text("Ready to compress")
                     if compressWhenReady { self.start(inputs: scanned.inputs, freshSnapshot: scanned) }
                 }

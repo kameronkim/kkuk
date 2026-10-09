@@ -84,12 +84,14 @@ public enum InputScanner {
     public static func scanInputs(_ inputs: [URL], checkCancellation: () throws -> Void = {}) throws -> InputSnapshot {
         guard !inputs.isEmpty else { throw KkukError.inputMissing }
         var selections: [URL] = []
+        var seen: Set<URL> = []
         for input in inputs {
+            try checkCancellation()
             guard input.isFileURL else { throw KkukError.inputMissing }
             let selected = input.standardizedFileURL
             let normalized = selected.deletingLastPathComponent().resolvingSymlinksInPath()
                 .appendingPathComponent(selected.lastPathComponent)
-            if !selections.contains(normalized) { selections.append(normalized) }
+            if seen.insert(normalized).inserted { selections.append(normalized) }
         }
         let parent = selections[0].deletingLastPathComponent()
         guard selections.allSatisfy({ $0.deletingLastPathComponent() == parent }) else {
