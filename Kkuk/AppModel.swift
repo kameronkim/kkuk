@@ -64,11 +64,11 @@ final class AppModel: ObservableObject {
         analyze(url)
         return true
     }
-    func analyze(_ folder: URL, compressWhenReady: Bool = false) {
+    func analyze(_ input: URL) {
         guard canChooseInput else { return }
-        analyzeInputs([folder], compressWhenReady: compressWhenReady)
+        analyzeInputs([input], compressWhenReady: false)
     }
-    func analyzeInputs(_ inputs: [URL], compressWhenReady: Bool = false) {
+    private func analyzeInputs(_ inputs: [URL], compressWhenReady: Bool) {
         guard !busy, acceptsNewInput, let folder = inputs.first else { return }
         selectedInputCount = Set(inputs).count
         selectedInput = folder
