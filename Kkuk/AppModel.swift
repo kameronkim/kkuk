@@ -92,7 +92,7 @@ final class AppModel: ObservableObject {
                     self.snapshot = scanned; self.preset = selected; self.busy = false; self.scanning = false
                     self.selectedInput = scanned.input; self.selectedIsDirectory = scanned.isDirectory
                     self.status = L10n.text("Ready to compress")
-                    if compressWhenReady { self.start() }
+                    if compressWhenReady { self.start(inputs: scanned.inputs, freshSnapshot: scanned) }
                 }
             } catch {
                 DispatchQueue.main.async { self.fail(error) }
@@ -101,7 +101,10 @@ final class AppModel: ObservableObject {
     }
     func start() {
         guard !busy, let inputs = snapshot?.inputs else { return }
-        // Rescan immediately before execution instead of relying on stale selection metadata.
+        start(inputs: inputs)
+    }
+    private func start(inputs: [URL], freshSnapshot: InputSnapshot? = nil) {
+        guard !busy else { return }
         let job = ArchiveJob(engine: engine)
         self.job = job
         cancellationRequested = false
@@ -109,7 +112,9 @@ final class AppModel: ObservableObject {
         status = L10n.text("Preparing compression")
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let current = try InputScanner.scanInputs(inputs) { try job.runner.checkCancellation() }
+                try job.runner.checkCancellation()
+                // Automatic Finder jobs just scanned; manual starts need fresh metadata.
+                let current = try freshSnapshot ?? InputScanner.scanInputs(inputs) { try job.runner.checkCancellation() }
                 let preset = CompressionPreset.select(inputBytes: current.totalBytes, memoryBudgetBytes: MemoryBudget.current())
                 DispatchQueue.main.async { self.snapshot = current; self.preset = preset }
                 let result = try job.executeBesideInput(snapshot: current, preset: preset) { stage, value in
