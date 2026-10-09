@@ -140,13 +140,17 @@ final class AppModel: ObservableObject {
                     self.status = L10n.text("Compression and verification complete")
                     self.onTaskFinished?()
                     if self.resumeFinderQueue() { return }
-                    self.completionSound.play()
-                    self.onArchiveSucceeded?()
+                    self.finishCompletedWork()
                 }
             } catch {
                 DispatchQueue.main.async { self.fail(error) }
             }
         }
+    }
+    func finishCompletedWork() {
+        guard !busy, acceptsNewInput, result != nil, pendingFinderRequests.isEmpty else { return }
+        completionSound.play()
+        onArchiveSucceeded?()
     }
     func cancel() {
         guard let job, !cancellationRequested else { return }

@@ -169,7 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 model.acceptsNewInput = previousState == .idle
                 if !model.busy, model.error == nil {
                     DispatchQueue.main.async {
-                        if !self.model.resumeFinderQueue(), self.model.result != nil { self.model.onArchiveSucceeded?() }
+                        if !self.model.resumeFinderQueue() { self.model.finishCompletedWork() }
                     }
                 }
                 return .terminateCancel
