@@ -6,22 +6,22 @@ import KkukCore
 
 @MainActor
 final class AppModel: ObservableObject {
-    @Published var selectedInputCount = 1
-    @Published var selectedInput: URL?
-    @Published var selectedIsDirectory = false
-    @Published var scanning = false
-    @Published var showsScanGauge = false
+    @Published private(set) var selectedInputCount = 1
+    @Published private(set) var selectedInput: URL?
+    @Published private(set) var selectedIsDirectory = false
+    @Published private(set) var scanning = false
+    @Published private(set) var showsScanGauge = false
     private var scanGaugeTask: DispatchWorkItem?
     private var pendingInputRequest: UUID?
-    @Published var snapshot: InputSnapshot?
-    @Published var preset: CompressionPreset?
-    @Published var busy = false
+    @Published private(set) var snapshot: InputSnapshot?
+    @Published private(set) var preset: CompressionPreset?
+    @Published private(set) var busy = false
     @Published var acceptsNewInput = true
-    @Published var status = ""
+    @Published private(set) var status = ""
     var detail: String { result.map(Self.resultDetail) ?? "" }
-    @Published var progress: Double?
-    @Published var error: String?
-    @Published var result: ArchiveResult?
+    @Published private(set) var progress: Double?
+    @Published private(set) var error: String?
+    @Published private(set) var result: ArchiveResult?
     private var job: ArchiveJob?
     private var cancellationRequested = false
     @Published private(set) var pendingFinderRequests: [[URL]] = []
