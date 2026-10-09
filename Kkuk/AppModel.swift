@@ -5,6 +5,7 @@ import KkukCore
 
 @MainActor
 final class AppModel: ObservableObject {
+    @Published var selectedInputCount = 1
     @Published var selectedInput: URL?
     @Published var selectedIsDirectory = false
     @Published var scanning = false
@@ -59,7 +60,11 @@ final class AppModel: ObservableObject {
         if panel.runModal() == .OK, let url = panel.url { analyze(url) }
     }
     func analyze(_ folder: URL, compressWhenReady: Bool = false) {
-        guard !busy, acceptsNewInput else { return }
+        analyzeInputs([folder], compressWhenReady: compressWhenReady)
+    }
+    func analyzeInputs(_ inputs: [URL], compressWhenReady: Bool = false) {
+        guard !busy, acceptsNewInput, let folder = inputs.first else { return }
+        selectedInputCount = Set(inputs).count
         selectedInput = folder
         selectedIsDirectory = (try? folder.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
         scanning = true
@@ -76,7 +81,7 @@ final class AppModel: ObservableObject {
         status = ""; progress = nil
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let scanned = try InputScanner.scan(folder)
+                let scanned = try InputScanner.scanInputs(inputs)
                 let selected = CompressionPreset.select(inputBytes: scanned.totalBytes, memoryBudgetBytes: MemoryBudget.current())
                 DispatchQueue.main.async {
                     self.scanGaugeTask?.cancel(); self.scanGaugeTask = nil
@@ -92,7 +97,7 @@ final class AppModel: ObservableObject {
         }
     }
     func start() {
-        guard !busy, let input = snapshot?.input else { return }
+        guard !busy, let inputs = snapshot?.inputs else { return }
         // Rescan immediately before execution instead of relying on stale selection metadata.
         let job = ArchiveJob(engine: engine)
         self.job = job
@@ -101,7 +106,7 @@ final class AppModel: ObservableObject {
         status = L10n.text("Preparing compression")
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let current = try InputScanner.scan(input) { try job.runner.checkCancellation() }
+                let current = try InputScanner.scanInputs(inputs) { try job.runner.checkCancellation() }
                 let preset = CompressionPreset.select(inputBytes: current.totalBytes, memoryBudgetBytes: MemoryBudget.current())
                 DispatchQueue.main.async { self.snapshot = current; self.preset = preset }
                 let result = try job.executeBesideInput(snapshot: current, preset: preset) { stage, value in
@@ -154,6 +159,7 @@ final class AppModel: ObservableObject {
             let key: String
             switch error {
             case .inputMissing: key = "Choose a file or folder to compress."
+            case .differentInputLocations: key = "Choose items in the same folder."
             case .systemRoot: key = "Choose a file or folder instead of the system root."
             case .unsupportedFileName: key = "Rename files containing line breaks, then choose the input again."
             case .unsupportedInput: key = "Choose a regular file or folder."

@@ -70,3 +70,6 @@
 "%d waiting" = "%d waiting";
 "Continue queue" = "Continue queue";
 "Cancel the current and queued tasks and quit?" = "Cancel the current and queued tasks and quit?";
+"%d items" = "%d items";
+"Choose files or folders to compress." = "Choose files or folders to compress.";
+"Choose items in the same folder." = "Choose items in the same folder.";
