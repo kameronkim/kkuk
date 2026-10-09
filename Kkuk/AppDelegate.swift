@@ -124,7 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
     private func finishSuccessfulService() {
-        guard model.result != nil, model.pendingFinderInputs.isEmpty, terminationState == .idle else { return }
+        guard model.result != nil, model.pendingFinderRequests.isEmpty, terminationState == .idle else { return }
         terminationState = .waitingForSound
         model.acceptsNewInput = false
         model.completionSound.whenFinished { [weak self] in
@@ -159,7 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             terminationState = .confirming
             let alert = NSAlert()
             if let appIcon { alert.icon = appIcon.copy() as? NSImage }
-            alert.messageText = L10n.text(model.pendingFinderInputs.isEmpty ? "Cancel the current task and quit?" : "Cancel the current and queued tasks and quit?")
+            alert.messageText = L10n.text(model.pendingFinderRequests.isEmpty ? "Cancel the current task and quit?" : "Cancel the current and queued tasks and quit?")
             alert.informativeText = L10n.text("The original will be kept. Temporary archives will be removed before quitting.")
             alert.addButton(withTitle: L10n.text("Keep Working")); alert.addButton(withTitle: L10n.text("Cancel and Quit"))
             let response = alert.runModal()

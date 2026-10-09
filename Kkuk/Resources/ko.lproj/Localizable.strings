@@ -70,3 +70,6 @@
 "%d waiting" = "대기 %d개";
 "Continue queue" = "다음 작업 진행";
 "Cancel the current and queued tasks and quit?" = "진행 중인 작업과 대기 작업을 취소하고 종료할까요?";
+"%d items" = "항목 %d개";
+"Choose files or folders to compress." = "압축할 파일이나 폴더를 선택해 주세요.";
+"Choose items in the same folder." = "같은 폴더 안의 항목을 선택해 주세요.";

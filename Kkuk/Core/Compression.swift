@@ -3,6 +3,7 @@ import Darwin
 
 public enum KkukError: LocalizedError {
     case inputMissing
+    case differentInputLocations
     case systemRoot
     case unsupportedFileName(String)
     case unsupportedInput(String)
@@ -17,6 +18,7 @@ public enum KkukError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .inputMissing: return "압축할 파일이나 폴더를 선택해 주세요."
+        case .differentInputLocations: return "같은 폴더 안의 항목을 선택해 주세요."
         case .systemRoot: return "시스템 루트 대신 압축할 파일이나 폴더를 선택해 주세요."
         case .unsupportedFileName(let name): return "줄바꿈이 포함된 파일 이름은 현재 지원하지 않습니다: \(name)"
         case .unsupportedInput(let path): return "일반 파일·폴더·심볼릭 링크만 압축할 수 있습니다: \(path)"
@@ -50,6 +52,7 @@ public struct InputEntry: Equatable, Sendable {
 
 public struct InputSnapshot: Sendable {
     public let input: URL
+    public let inputs: [URL]
     public let entries: [InputEntry]
     public let excludedPaths: [String]
     public let isDirectory: Bool
@@ -57,10 +60,14 @@ public struct InputSnapshot: Sendable {
     public let fileCount: Int
 
     init(input: URL, entries: [InputEntry], excludedPaths: [String]) {
-        self.input = input
+        self.init(inputs: [input], entries: entries, excludedPaths: excludedPaths)
+    }
+    init(inputs: [URL], entries: [InputEntry], excludedPaths: [String]) {
+        self.input = inputs[0]
+        self.inputs = inputs
         self.entries = entries
         self.excludedPaths = excludedPaths
-        self.isDirectory = entries.first { $0.path == input.lastPathComponent }?.isDirectory ?? false
+        self.isDirectory = entries.first { $0.path == inputs[0].lastPathComponent }?.isDirectory ?? false
         var bytes: UInt64 = 0
         var count = 0
         for entry in entries where !entry.isDirectory {
@@ -74,6 +81,26 @@ public struct InputSnapshot: Sendable {
 }
 
 public enum InputScanner {
+    public static func scanInputs(_ inputs: [URL], checkCancellation: () throws -> Void = {}) throws -> InputSnapshot {
+        guard !inputs.isEmpty else { throw KkukError.inputMissing }
+        var selections: [URL] = []
+        for input in inputs {
+            guard input.isFileURL else { throw KkukError.inputMissing }
+            let selected = input.standardizedFileURL
+            let normalized = selected.deletingLastPathComponent().resolvingSymlinksInPath()
+                .appendingPathComponent(selected.lastPathComponent)
+            if !selections.contains(normalized) { selections.append(normalized) }
+        }
+        let parent = selections[0].deletingLastPathComponent()
+        guard selections.allSatisfy({ $0.deletingLastPathComponent() == parent }) else {
+            throw KkukError.differentInputLocations
+        }
+        let snapshots = try selections.map { try scan($0, checkCancellation: checkCancellation) }
+        return InputSnapshot(inputs: selections,
+                             entries: snapshots.flatMap(\.entries).sorted { $0.path < $1.path },
+                             excludedPaths: snapshots.flatMap(\.excludedPaths).sorted())
+    }
+
     public static func scan(_ input: URL, checkCancellation: () throws -> Void = {}) throws -> InputSnapshot {
         let selected = input.standardizedFileURL
         guard selected.path != "/" else { throw KkukError.systemRoot }
@@ -380,8 +407,9 @@ public final class ArchiveJob: Sendable {
     }
     public func executeBesideInput(snapshot: InputSnapshot, preset: CompressionPreset,
                                    progress: (ArchiveStage, Double?) -> Void = { _, _ in }) throws -> ArchiveResult {
-        let destination = snapshot.input.deletingLastPathComponent()
-            .appendingPathComponent(snapshot.input.lastPathComponent + ".7z")
+        let parentURL = snapshot.input.deletingLastPathComponent()
+        let base = snapshot.inputs.count == 1 ? snapshot.input.lastPathComponent : parentURL.lastPathComponent
+        let destination = parentURL.appendingPathComponent((base.isEmpty ? "Archive" : base) + ".7z")
         let fm = FileManager.default
         let parent = try PinnedDestinationDirectory(destination.deletingLastPathComponent())
         let nameLimit = try ArchiveFileAccess.nameLimit(directoryDescriptor: parent.descriptor)
@@ -414,11 +442,20 @@ public final class ArchiveJob: Sendable {
             let list = temporary.appendingPathComponent("excluded-paths.txt")
             let contents = snapshot.excludedPaths.map { "\"" + $0 + "\"" }.joined(separator: "\n") + "\n"
             try ArchiveFileAccess.writePrivateList(contents, directoryDescriptor: temporaryDescriptor)
-            exclusions = ["-scsUTF-8", "-x@" + list.path]
+            exclusions = ["-x@" + list.path]
+        }
+        var inclusions: [String] = []
+        var selectionArguments = snapshot.inputs.map { "./" + $0.lastPathComponent }
+        if snapshot.inputs.count > 1 {
+            // A list file avoids command-line size limits for large Finder selections.
+            let contents = selectionArguments.map { "\"" + $0 + "\"" }.joined(separator: "\n") + "\n"
+            try ArchiveFileAccess.writePrivateList(contents, directoryDescriptor: temporaryDescriptor, name: "selected-paths.txt")
+            inclusions = ["-i@" + temporary.appendingPathComponent("selected-paths.txt").path]
+            selectionArguments = []
         }
         let args = ["a", "-t7z", "-m0=lzma2", "-mx=9", "-md=\(preset.dictionaryMiB)m",
                     "-mfb=273", "-ms=\(solidBytes)b", "-mmt=2", "-mqs=on", "-sse", "-snl", "-ssp", "-spd",
-                    "-sccUTF-8", "-bb0", "-bsp1", "-y"] + exclusions + ["--", archive.path, "./" + snapshot.input.lastPathComponent]
+                    "-sccUTF-8", "-scsUTF-8", "-bb0", "-bsp1", "-y"] + exclusions + inclusions + ["--", archive.path] + selectionArguments
         progress(.compressing, 0)
         try parent.verify()
         var progressParser = CompressionProgressParser()
@@ -441,7 +478,7 @@ public final class ArchiveJob: Sendable {
             throw KkukError.archiveContentsMismatch(missing: missing, extra: extra)
         }
         try parent.verify()
-        let current = try InputScanner.scan(snapshot.input) { try self.runner.checkCancellation() }
+        let current = try InputScanner.scanInputs(snapshot.inputs) { try self.runner.checkCancellation() }
         guard current.entries == snapshot.entries else {
             throw KkukError.sourceChanged
         }
