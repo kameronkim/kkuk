@@ -23,9 +23,7 @@ struct FinderProgressView: View {
                         .lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 0)
                     if !model.pendingFinderRequests.isEmpty {
-                        Text(L10n.format("%d waiting", model.pendingFinderRequests.count))
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(KkukTheme.secondary)
+                        FinderQueueButton(model: model)
                     }
                     Button(action: close) { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(.plain).foregroundStyle(KkukTheme.secondary)
