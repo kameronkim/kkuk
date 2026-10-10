@@ -5,6 +5,7 @@
 "Applied automatically" = "선택하면 자동 적용";
 "Based on input size and available memory." = "입력 크기와 메모리 여유에 맞춰 설정합니다.";
 "Cancel" = "취소";
+"Cancel current task" = "현재 작업 취소";
 "Cancel and Quit" = "취소하고 종료";
 "Cancel the current task and quit?" = "진행 중인 작업을 취소하고 종료할까요?";
 "Canceled" = "취소됨";
