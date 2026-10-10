@@ -4,6 +4,17 @@ import SwiftUI
 import UniformTypeIdentifiers
 import KkukCore
 
+struct FinderCompressionRequest: Identifiable {
+    let id = UUID()
+    let inputs: [URL]
+
+    var title: String {
+        guard let first = inputs.first else { return L10n.text("Kkuk") }
+        let count = Set(inputs).count
+        return count == 1 ? first.lastPathComponent : L10n.format("%@ and %d more", first.lastPathComponent, count - 1)
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var selectedInputCount = 1
@@ -24,7 +35,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var result: ArchiveResult?
     private var job: ArchiveJob?
     private var cancellationRequested = false
-    @Published private(set) var pendingFinderRequests: [[URL]] = []
+    @Published private(set) var pendingFinderRequests: [FinderCompressionRequest] = []
     var onFinderTaskStarted: (() -> Void)?
     var onTaskFinished: (() -> Void)?
     var onArchiveSucceeded: (() -> Void)?
@@ -38,17 +49,21 @@ final class AppModel: ObservableObject {
     func enqueueFinderInputs(_ inputs: [URL]) -> Bool {
         guard acceptsNewInput, !inputs.isEmpty, inputs.allSatisfy(\.isFileURL) else { return false }
         pendingInputRequest = nil
-        pendingFinderRequests.append(inputs)
+        pendingFinderRequests.append(FinderCompressionRequest(inputs: inputs))
         if !busy, error == nil { resumeFinderQueue() }
         return true
     }
     @discardableResult
     func resumeFinderQueue() -> Bool {
         guard !busy, acceptsNewInput, !pendingFinderRequests.isEmpty else { return false }
-        let inputs = pendingFinderRequests.removeFirst()
+        let inputs = pendingFinderRequests.removeFirst().inputs
         analyzeInputs(inputs, compressWhenReady: true)
         onFinderTaskStarted?()
         return true
+    }
+    func removeFinderRequest(id: UUID) {
+        guard acceptsNewInput else { return }
+        pendingFinderRequests.removeAll { $0.id == id }
     }
     func discardFinderQueue() { pendingFinderRequests.removeAll() }
 
