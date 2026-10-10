@@ -12,6 +12,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var scanning = false
     @Published private(set) var showsScanGauge = false
     private var scanGaugeTask: DispatchWorkItem?
+    private var scanRunner: ProcessRunner?
+    private var continuesQueueAfterCancellation = false
     private var pendingInputRequest: UUID?
     @Published private(set) var snapshot: InputSnapshot?
     @Published private(set) var preset: CompressionPreset?
@@ -93,6 +95,10 @@ final class AppModel: ObservableObject {
     private func analyzeInputs(_ inputs: [URL], compressWhenReady: Bool) {
         guard !busy, acceptsNewInput, let folder = inputs.first else { return }
         pendingInputRequest = nil
+        let scanRunner = ProcessRunner()
+        self.scanRunner = scanRunner
+        cancellationRequested = false
+        continuesQueueAfterCancellation = false
         selectedInputCount = Set(inputs).count
         selectedInput = folder
         selectedIsDirectory = (try? folder.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
@@ -110,9 +116,11 @@ final class AppModel: ObservableObject {
         status = ""; progress = nil
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let scanned = try InputScanner.scanInputs(inputs)
+                let scanned = try InputScanner.scanInputs(inputs) { try scanRunner.checkCancellation() }
                 let selected = CompressionPreset.select(inputBytes: scanned.totalBytes, memoryBudgetBytes: MemoryBudget.current())
                 DispatchQueue.main.async {
+                    guard !self.cancellationRequested else { self.fail(KkukError.cancelled); return }
+                    self.scanRunner = nil
                     self.scanGaugeTask?.cancel(); self.scanGaugeTask = nil
                     self.showsScanGauge = false
                     self.snapshot = scanned; self.preset = selected; self.busy = false; self.scanning = false
@@ -137,6 +145,7 @@ final class AppModel: ObservableObject {
         let job = ArchiveJob(engine: engine)
         self.job = job
         cancellationRequested = false
+        continuesQueueAfterCancellation = false
         busy = true; error = nil; result = nil; progress = nil
         status = L10n.text("Preparing compression")
         DispatchQueue.global(qos: .userInitiated).async {
@@ -160,6 +169,7 @@ final class AppModel: ObservableObject {
                 }
                 DispatchQueue.main.async {
                     self.cancellationRequested = false
+                    self.continuesQueueAfterCancellation = false
                     self.result = result; self.busy = false; self.job = nil; self.progress = nil
                     self.status = L10n.text("Compression and verification complete")
                     self.onTaskFinished?()
@@ -176,23 +186,39 @@ final class AppModel: ObservableObject {
         completionSound.play()
         onArchiveSucceeded?()
     }
+    var isCancelling: Bool { cancellationRequested }
+    var canCancelCurrentTask: Bool { acceptsNewInput && canCancel && !cancellationRequested }
+    func cancelCurrentTask() {
+        guard canCancelCurrentTask else { return }
+        continuesQueueAfterCancellation = true
+        cancel()
+    }
+    // Application termination uses this path and never opts into continuing the queue.
     func cancel() {
-        guard let job, !cancellationRequested else { return }
+        guard canCancel, !cancellationRequested else { return }
         cancellationRequested = true
         status = L10n.text("Canceling")
-        job.cancel()
+        job?.cancel()
+        scanRunner?.cancel()
     }
     func fail(_ failure: Error) {
         scanGaugeTask?.cancel(); scanGaugeTask = nil
         showsScanGauge = false
-        busy = false; scanning = false; progress = nil; job = nil
+        busy = false; scanning = false; progress = nil; job = nil; scanRunner = nil
+        let continueQueue = continuesQueueAfterCancellation
+        continuesQueueAfterCancellation = false
         cancellationRequested = false
+        let wasCancelled: Bool
         if let kkukError = failure as? KkukError, case .cancelled = kkukError {
+            wasCancelled = true
             error = nil; status = L10n.text("Canceled")
         } else {
+            wasCancelled = false
             error = Self.userFacingError(failure); status = L10n.text("Could not compress.")
         }
         onTaskFinished?()
+        // ArchiveJob has already cleaned its temporary directory before reaching here.
+        if wasCancelled && continueQueue { resumeFinderQueue() }
     }
     static func userFacingError(_ failure: Error) -> String {
         // Keep engine transcripts, file paths and error codes out of the interface.
@@ -251,5 +277,5 @@ final class AppModel: ObservableObject {
         }
         return "\(bytes(result.originalBytes)) → \(bytes(result.archiveBytes)) · \(change)"
     }
-    var canCancel: Bool { job != nil }
+    var canCancel: Bool { job != nil || scanRunner != nil }
 }
