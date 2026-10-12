@@ -16,7 +16,7 @@ struct FinderQueueButton: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text(L10n.text("Queued tasks")).font(.system(size: 12, weight: .semibold))
                 ScrollView {
-                    VStack(spacing: 0) {
+                    LazyVStack(spacing: 0) {
                         ForEach(model.pendingFinderRequests) { request in
                             HStack(spacing: 12) {
                                 VStack(alignment: .leading, spacing: 3) {
