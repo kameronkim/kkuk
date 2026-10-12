@@ -7,11 +7,16 @@ import KkukCore
 struct FinderCompressionRequest: Identifiable {
     let id = UUID()
     let inputs: [URL]
+    private let inputCount: Int
+
+    init(inputs: [URL]) {
+        self.inputs = inputs
+        inputCount = Set(inputs).count
+    }
 
     var title: String {
         guard let first = inputs.first else { return L10n.text("Kkuk") }
-        let count = Set(inputs).count
-        return count == 1 ? first.lastPathComponent : L10n.format("%@ and %d more", first.lastPathComponent, count - 1)
+        return inputCount == 1 ? first.lastPathComponent : L10n.format("%@ and %d more", first.lastPathComponent, inputCount - 1)
     }
 }
 
