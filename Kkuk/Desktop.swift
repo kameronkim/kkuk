@@ -178,8 +178,8 @@ struct CompressionView: View {
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 Group {
-                    if model.busy && !model.scanning {
-                        if model.canCancel { Button(L10n.text("Cancel"), action: model.cancel).buttonStyle(QuietActionStyle(secondary: true, focused: focusedControl == .operation)) }
+                    if model.busy {
+                        if model.canCancel { Button(L10n.text("Cancel"), action: model.cancelCurrentTask).buttonStyle(QuietActionStyle(secondary: true, focused: focusedControl == .operation)).disabled(!model.canCancelCurrentTask).help(L10n.text("Cancel current task")).accessibilityLabel(L10n.text("Cancel current task")) }
                     } else if !model.pendingFinderRequests.isEmpty {
                         Button(L10n.text("Continue queue")) { model.resumeFinderQueue() }.buttonStyle(QuietActionStyle(focused: focusedControl == .operation))
                     } else if model.result != nil {
