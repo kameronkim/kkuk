@@ -164,7 +164,10 @@ struct CompressionView: View {
                 .frame(height: 2).padding(.top, 20).padding(.bottom, 14)
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 5) {
-                    if !model.status.isEmpty { Text(model.status + (model.pendingFinderRequests.isEmpty ? "" : " · " + L10n.format("%d waiting", model.pendingFinderRequests.count))).font(.system(size: 13, weight: .semibold)) }
+                    HStack(spacing: 8) {
+                        if !model.status.isEmpty { Text(model.status).font(.system(size: 13, weight: .semibold)) }
+                        if !model.pendingFinderRequests.isEmpty { FinderQueueButton(model: model) }
+                    }
                     if let error = model.error {
                         Text(error).font(.system(size: 11)).foregroundStyle(KkukTheme.secondary)
                             .fixedSize(horizontal: false, vertical: true).lineLimit(2)
