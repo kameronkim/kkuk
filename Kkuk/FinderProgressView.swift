@@ -8,7 +8,7 @@ struct FinderProgressView: View {
     static func height(hasError: Bool) -> CGFloat { hasError ? 92 : 64 }
 
     private var status: String {
-        model.scanning ? L10n.text("Checking input…") : model.status
+        model.scanning && !model.isCancelling ? L10n.text("Checking input…") : model.status
     }
 
     var body: some View {
@@ -23,9 +23,7 @@ struct FinderProgressView: View {
                         .lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 0)
                     if !model.pendingFinderRequests.isEmpty {
-                        Text(L10n.format("%d waiting", model.pendingFinderRequests.count))
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(KkukTheme.secondary)
+                        FinderQueueButton(model: model)
                     }
                     Button(action: close) { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(.plain).foregroundStyle(KkukTheme.secondary)
@@ -42,10 +40,17 @@ struct FinderProgressView: View {
                         }
                     }.foregroundStyle(KkukTheme.secondary)
                     Spacer(minLength: 0)
-                    if model.busy, let progress = model.progress {
-                        Text("\(Int(min(max(progress, 0), 1) * 100))%")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(KkukTheme.secondary)
+                    if model.busy {
+                        if let progress = model.progress {
+                            Text("\(Int(min(max(progress, 0), 1) * 100))%")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(KkukTheme.secondary)
+                        }
+                        if model.canCancel {
+                            Button(L10n.text("Cancel current task"), action: model.cancelCurrentTask)
+                                .buttonStyle(.plain).font(.system(size: 10))
+                                .disabled(!model.canCancelCurrentTask)
+                        }
                     } else if !model.busy, !model.pendingFinderRequests.isEmpty {
                         Button(L10n.text("Continue queue")) { model.resumeFinderQueue() }
                             .buttonStyle(.plain).font(.system(size: 10))

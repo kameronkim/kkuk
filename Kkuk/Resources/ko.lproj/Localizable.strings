@@ -5,6 +5,7 @@
 "Applied automatically" = "선택하면 자동 적용";
 "Based on input size and available memory." = "입력 크기와 메모리 여유에 맞춰 설정합니다.";
 "Cancel" = "취소";
+"Cancel current task" = "현재 작업 취소";
 "Cancel and Quit" = "취소하고 종료";
 "Cancel the current task and quit?" = "진행 중인 작업을 취소하고 종료할까요?";
 "Canceled" = "취소됨";
@@ -63,7 +64,6 @@
 
 "Move the source to a private folder, then try again." = "원본을 개인 폴더로 옮긴 뒤 다시 시도해 주세요.";
 
-"Choose one file or folder to compress." = "압축할 파일이나 폴더 하나를 선택해 주세요.";
 "Checking input…" = "입력 확인 중";
 "Close" = "닫기";
 
@@ -73,3 +73,9 @@
 "%d items" = "항목 %d개";
 "Choose files or folders to compress." = "압축할 파일이나 폴더를 선택해 주세요.";
 "Choose items in the same folder." = "같은 폴더 안의 항목을 선택해 주세요.";
+
+"%@ and %d more" = "%@ 외 %d개";
+"View queued tasks" = "대기 작업 보기";
+"Queued tasks" = "대기 작업";
+"Remove from queue" = "대기 목록에서 제거";
+"Remove %@ from queue" = "%@ 대기 목록에서 제거";

@@ -187,7 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             model.cancel()
             return .terminateLater
         }
-        // Analysis is read-only; no temporary archive exists yet.
+        // No active scan or archive remains.
         terminationState = .requested
         return .terminateNow
     }

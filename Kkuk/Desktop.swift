@@ -164,7 +164,10 @@ struct CompressionView: View {
                 .frame(height: 2).padding(.top, 20).padding(.bottom, 14)
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 5) {
-                    if !model.status.isEmpty { Text(model.status + (model.pendingFinderRequests.isEmpty ? "" : " · " + L10n.format("%d waiting", model.pendingFinderRequests.count))).font(.system(size: 13, weight: .semibold)) }
+                    HStack(spacing: 8) {
+                        if !model.status.isEmpty { Text(model.status).font(.system(size: 13, weight: .semibold)) }
+                        if !model.pendingFinderRequests.isEmpty { FinderQueueButton(model: model) }
+                    }
                     if let error = model.error {
                         Text(error).font(.system(size: 11)).foregroundStyle(KkukTheme.secondary)
                             .fixedSize(horizontal: false, vertical: true).lineLimit(2)
@@ -175,8 +178,8 @@ struct CompressionView: View {
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 Group {
-                    if model.busy && !model.scanning {
-                        if model.canCancel { Button(L10n.text("Cancel"), action: model.cancel).buttonStyle(QuietActionStyle(secondary: true, focused: focusedControl == .operation)) }
+                    if model.busy {
+                        if model.canCancel { Button(L10n.text("Cancel"), action: model.cancelCurrentTask).buttonStyle(QuietActionStyle(secondary: true, focused: focusedControl == .operation)).disabled(!model.canCancelCurrentTask).help(L10n.text("Cancel current task")).accessibilityLabel(L10n.text("Cancel current task")) }
                     } else if !model.pendingFinderRequests.isEmpty {
                         Button(L10n.text("Continue queue")) { model.resumeFinderQueue() }.buttonStyle(QuietActionStyle(focused: focusedControl == .operation))
                     } else if model.result != nil {
