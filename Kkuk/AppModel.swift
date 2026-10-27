@@ -20,6 +20,12 @@ struct FinderCompressionRequest: Identifiable {
     }
 }
 
+struct FailedFinderRequest: Identifiable {
+    let request: FinderCompressionRequest
+    let reason: String
+    var id: UUID { request.id }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var selectedInputCount = 1
@@ -43,13 +49,33 @@ final class AppModel: ObservableObject {
     private var job: ArchiveJob?
     private var cancellationRequested = false
     @Published private(set) var pendingFinderRequests: [FinderCompressionRequest] = []
+    @Published private(set) var failedFinderRequests: [FailedFinderRequest] = []
+    private var activeFinderRequest: FinderCompressionRequest?
+    private let memoryBudget: @Sendable () -> UInt64
+    let engine: URL
     var onFinderTaskStarted: (() -> Void)?
     var onTaskFinished: (() -> Void)?
     var onArchiveSucceeded: (() -> Void)?
     let completionSound = CompletionSoundPlayer()
 
-    var engine: URL {
-        Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/7zz")
+    init(engine: URL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/7zz"),
+         memoryBudget: @escaping @Sendable () -> UInt64 = { MemoryBudget.current() }) {
+        self.engine = engine
+        self.memoryBudget = memoryBudget
+    }
+    var hasFinderTasks: Bool { !pendingFinderRequests.isEmpty || !failedFinderRequests.isEmpty }
+    var canRetryFailedRequest: Bool { !busy && acceptsNewInput }
+    var canFinishSession: Bool {
+        !busy && acceptsNewInput && result != nil && pendingFinderRequests.isEmpty && failedFinderRequests.isEmpty
+    }
+    @discardableResult
+    func retryFailedFinderRequest(id: UUID) -> Bool {
+        guard canRetryFailedRequest, let failure = failedFinderRequests.first(where: { $0.id == id }),
+              !pendingFinderRequests.contains(where: { $0.id == id }) else { return false }
+        // Keep the failure visible until this exact request succeeds. Start with URLs,
+        // never the old snapshot or preset, so source and memory are checked again.
+        pendingFinderRequests.insert(failure.request, at: 0)
+        return resumeFinderQueue()
     }
     // Only URLs wait in the queue. Scan and choose a memory budget at execution time.
     @discardableResult
@@ -63,8 +89,9 @@ final class AppModel: ObservableObject {
     @discardableResult
     func resumeFinderQueue() -> Bool {
         guard !busy, acceptsNewInput, !pendingFinderRequests.isEmpty else { return false }
-        let inputs = pendingFinderRequests.removeFirst().inputs
-        analyzeInputs(inputs, compressWhenReady: true)
+        let request = pendingFinderRequests.removeFirst()
+        activeFinderRequest = request
+        analyzeInputs(request.inputs, compressWhenReady: true)
         onFinderTaskStarted?()
         return true
     }
@@ -134,10 +161,11 @@ final class AppModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: gaugeTask)
         busy = true; error = nil; result = nil; snapshot = nil; preset = nil
         status = ""; progress = nil
+        let memoryBudget = self.memoryBudget
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 let scanned = try InputScanner.scanInputs(inputs) { try scanRunner.checkCancellation() }
-                let selected = CompressionPreset.select(inputBytes: scanned.totalBytes, memoryBudgetBytes: MemoryBudget.current())
+                let selected = CompressionPreset.select(inputBytes: scanned.totalBytes, memoryBudgetBytes: memoryBudget())
                 DispatchQueue.main.async {
                     guard !self.cancellationRequested else { self.fail(KkukError.cancelled); return }
                     self.scanRunner = nil
@@ -168,12 +196,13 @@ final class AppModel: ObservableObject {
         continuesQueueAfterCancellation = false
         busy = true; error = nil; result = nil; progress = nil
         status = L10n.text("Preparing compression")
+        let memoryBudget = self.memoryBudget
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 try job.runner.checkCancellation()
                 // Automatic Finder jobs just scanned; manual starts need fresh metadata.
                 let current = try freshSnapshot ?? InputScanner.scanInputs(inputs) { try job.runner.checkCancellation() }
-                let preset = CompressionPreset.select(inputBytes: current.totalBytes, memoryBudgetBytes: MemoryBudget.current())
+                let preset = CompressionPreset.select(inputBytes: current.totalBytes, memoryBudgetBytes: memoryBudget())
                 DispatchQueue.main.async { self.snapshot = current; self.preset = preset }
                 let result = try job.executeBesideInput(snapshot: current, preset: preset) { stage, value in
                     DispatchQueue.main.async {
@@ -190,6 +219,10 @@ final class AppModel: ObservableObject {
                 DispatchQueue.main.async {
                     self.cancellationRequested = false
                     self.continuesQueueAfterCancellation = false
+                    if let request = self.activeFinderRequest {
+                        self.failedFinderRequests.removeAll { $0.id == request.id }
+                    }
+                    self.activeFinderRequest = nil
                     self.result = result; self.busy = false; self.job = nil; self.progress = nil
                     self.status = L10n.text("Compression and verification complete")
                     self.onTaskFinished?()
@@ -202,7 +235,7 @@ final class AppModel: ObservableObject {
         }
     }
     func finishCompletedWork() {
-        guard !busy, acceptsNewInput, result != nil, pendingFinderRequests.isEmpty else { return }
+        guard canFinishSession else { return }
         completionSound.play()
         onArchiveSucceeded?()
     }
@@ -234,8 +267,18 @@ final class AppModel: ObservableObject {
             error = nil; status = L10n.text("Canceled")
         } else {
             wasCancelled = false
-            error = Self.userFacingError(failure); status = L10n.text("Could not compress.")
+            let reason = Self.userFacingError(failure)
+            error = reason; status = L10n.text("Could not compress.")
+            if let request = activeFinderRequest {
+                let record = FailedFinderRequest(request: request, reason: reason)
+                if let index = failedFinderRequests.firstIndex(where: { $0.id == request.id }) {
+                    failedFinderRequests[index] = record
+                } else {
+                    failedFinderRequests.append(record)
+                }
+            }
         }
+        activeFinderRequest = nil
         onTaskFinished?()
         // ArchiveJob has already cleaned its temporary directory before reaching here.
         if wasCancelled && continueQueue { resumeFinderQueue() }

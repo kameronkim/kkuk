@@ -113,7 +113,10 @@ public enum InputScanner {
         guard folder.path != "/" else { throw KkukError.systemRoot }
         func visit(_ url: URL, path: String) throws {
             try checkCancellation()
-            guard !path.contains("\n"), !path.contains("\r") else {
+            // Finder's custom folder icon is a regular file named Icon followed by CR.
+            // Other line breaks remain unsupported by the engine's line-based lists.
+            let isFinderIcon = url.lastPathComponent == "Icon\r" && !path.dropLast().contains("\r")
+            guard !path.contains("\n"), !path.contains("\r") || isFinderIcon else {
                 throw KkukError.unsupportedFileName(url.lastPathComponent)
             }
             // Read type, identity and timestamps together without following symbolic links.
@@ -141,6 +144,9 @@ public enum InputScanner {
             guard type == .typeDirectory || type == .typeRegular || type == .typeSymbolicLink else {
                 throw KkukError.unsupportedInput(path)
             }
+            if isFinderIcon && type != .typeRegular {
+                throw KkukError.unsupportedFileName(url.lastPathComponent)
+            }
             let link = type == .typeSymbolicLink ? try FileManager.default.destinationOfSymbolicLink(atPath: url.path) : nil
             let entry = InputEntry(path: path,
                                    size: type == .typeDirectory ? 0 : UInt64(max(0, metadata.st_size)),
@@ -152,12 +158,15 @@ public enum InputScanner {
                                    changedNanoseconds: metadata.st_ctimespec.tv_nsec)
             entries.append(entry)
             if entry.isDirectory {
-                for child in try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil) {
-                    try visit(child, path: path + "/" + child.lastPathComponent)
+                // URL path components can normalize Unicode. Keep the on-disk spelling
+                // for literal 7-Zip selection/exclusion matching, including NFC names.
+                for name in try FileManager.default.contentsOfDirectory(atPath: url.path) {
+                    try visit(url.appendingPathComponent(name), path: path + "/" + name)
                 }
             }
         }
-        try visit(folder, path: folder.lastPathComponent)
+        let name = (try? folder.resourceValues(forKeys: [.nameKey]).name) ?? folder.lastPathComponent
+        try visit(folder, path: name)
     }
 }
 
@@ -335,6 +344,10 @@ public struct ArchiveResult: Sendable {
 // Decode only complete LF-delimited records so UTF-8 names survive split pipe reads.
 // Non-path records are discarded as soon as their prefix is known.
 struct ArchivePathParser {
+    enum LineEnding { case lf, crlf }
+    private let lineEnding: LineEnding
+    init(lineEnding: LineEnding = .lf) { self.lineEnding = lineEnding }
+
     private var pending = Data()
     private var discarding = false
     private var paths: Set<String> = []
@@ -355,7 +368,8 @@ struct ArchivePathParser {
     }
     private mutating func finishLine() {
         if !discarding, pending.starts(with: prefix) {
-            if pending.last == 13 { pending.removeLast() }
+            // The bundled macOS engine emits LF; a trailing CR can belong to Icon\r.
+            if lineEnding == .crlf && pending.last == 13 { pending.removeLast() }
             paths.insert(String(decoding: pending.dropFirst(prefix.count), as: UTF8.self))
         }
         pending.removeAll(keepingCapacity: true)
@@ -446,13 +460,18 @@ public final class ArchiveJob: Sendable {
             exclusions = ["-x@" + list.path]
         }
         var inclusions: [String] = []
-        var selectionArguments = snapshot.inputs.map { "./" + $0.lastPathComponent }
-        if snapshot.inputs.count > 1 {
-            // A list file avoids command-line size limits for large Finder selections.
-            let contents = selectionArguments.map { "\"" + $0 + "\"" }.joined(separator: "\n") + "\n"
+        // Root entries retain the filesystem spelling; URL components may normalize it.
+        var selectionArguments = snapshot.entries.filter { !$0.path.contains("/") }.map { "./" + $0.path }
+        if selectionArguments.contains(where: { !$0.contains("\r") }) {
+            // A UTF-8 list preserves the on-disk Unicode spelling: Foundation can
+            // normalize process arguments. It also avoids command-line size limits.
+            // Icon\r cannot go through a line-delimited list. At most one exists
+            // among selections in the same parent, so pass that name as an argument.
+            let listedSelections = selectionArguments.filter { !$0.contains("\r") }
+            let contents = listedSelections.map { "\"" + $0 + "\"" }.joined(separator: "\n") + "\n"
             try ArchiveFileAccess.writePrivateList(contents, directoryDescriptor: temporaryDescriptor, name: "selected-paths.txt")
             inclusions = ["-i@" + temporary.appendingPathComponent("selected-paths.txt").path]
-            selectionArguments = []
+            selectionArguments = selectionArguments.filter { $0.contains("\r") }
         }
         let args = ["a", "-t7z", "-m0=lzma2", "-mx=9", "-md=\(preset.dictionaryMiB)m",
                     "-mfb=273", "-ms=\(solidBytes)b", "-mmt=2", "-mqs=on", "-sse", "-snl", "-ssp", "-spd",
@@ -465,11 +484,11 @@ public final class ArchiveJob: Sendable {
         })
         progress(.verifying, nil)
         try parent.verify()
-        try runner.run(executable: engine, arguments: ["t", "-sccUTF-8", "-bsp0", "--", archive.path])
+        try runner.run(executable: engine, arguments: ["t", "-spd", "-sccUTF-8", "-bsp0", "--", archive.path])
         progress(.checkingContents, nil)
         try parent.verify()
         var pathParser = ArchivePathParser()
-        try runner.run(executable: engine, arguments: ["l", "-slt", "-ba", "-sccUTF-8", "--", archive.path],
+        try runner.run(executable: engine, arguments: ["l", "-slt", "-ba", "-spd", "-sccUTF-8", "--", archive.path],
                            output: { pathParser.consume($0) })
         let actualPaths = pathParser.finish()
         let expectedPaths = snapshot.archivePaths
