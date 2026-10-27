@@ -22,7 +22,7 @@ struct FinderProgressView: View {
                         .font(.system(size: 12, weight: .semibold))
                         .lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 0)
-                    if !model.pendingFinderRequests.isEmpty {
+                    if model.hasFinderTasks {
                         FinderQueueButton(model: model)
                     }
                     Button(action: close) { Image(systemName: "xmark.circle.fill") }

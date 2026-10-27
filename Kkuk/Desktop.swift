@@ -166,7 +166,7 @@ struct CompressionView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(spacing: 8) {
                         if !model.status.isEmpty { Text(model.status).font(.system(size: 13, weight: .semibold)) }
-                        if !model.pendingFinderRequests.isEmpty { FinderQueueButton(model: model) }
+                        if model.hasFinderTasks { FinderQueueButton(model: model) }
                     }
                     if let error = model.error {
                         Text(error).font(.system(size: 11)).foregroundStyle(KkukTheme.secondary)
