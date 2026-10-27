@@ -31,10 +31,13 @@ struct FinderQueueButton: View {
                             Text(L10n.text("Failed tasks")).font(.system(size: 10, weight: .semibold))
                                 .foregroundStyle(KkukTheme.secondary).padding(.bottom, 4)
                             ForEach(model.failedFinderRequests) { failure in
+                                let sourcePath = failure.request.inputs.first?.deletingLastPathComponent().path ?? ""
                                 HStack(alignment: .top, spacing: 12) {
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(failure.request.title).font(.system(size: 12, weight: .medium))
                                             .lineLimit(1).truncationMode(.middle)
+                                        Text(sourcePath).font(.system(size: 10)).foregroundStyle(KkukTheme.secondary)
+                                            .lineLimit(1).truncationMode(.middle).help(sourcePath)
                                         Text(failure.reason).font(.system(size: 10)).foregroundStyle(KkukTheme.secondary)
                                             .fixedSize(horizontal: false, vertical: true)
                                     }.frame(maxWidth: .infinity, alignment: .leading)
@@ -42,6 +45,7 @@ struct FinderQueueButton: View {
                                         .buttonStyle(.plain).font(.system(size: 11))
                                         .disabled(!model.canRetryFailedRequest)
                                         .accessibilityLabel(L10n.format("Retry %@", failure.request.title))
+                                        .accessibilityHint(sourcePath)
                                 }.padding(.vertical, 9)
                                 Rectangle().fill(KkukTheme.line).frame(height: 1)
                             }

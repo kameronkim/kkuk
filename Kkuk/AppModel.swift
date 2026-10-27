@@ -74,8 +74,8 @@ final class AppModel: ObservableObject {
               !pendingFinderRequests.contains(where: { $0.id == id }) else { return false }
         // Keep the failure visible until this exact request succeeds. Start with URLs,
         // never the old snapshot or preset, so source and memory are checked again.
-        pendingFinderRequests.insert(failure.request, at: 0)
-        return resumeFinderQueue()
+        startFinderRequest(failure.request)
+        return true
     }
     // Only URLs wait in the queue. Scan and choose a memory budget at execution time.
     @discardableResult
@@ -90,10 +90,13 @@ final class AppModel: ObservableObject {
     func resumeFinderQueue() -> Bool {
         guard !busy, acceptsNewInput, !pendingFinderRequests.isEmpty else { return false }
         let request = pendingFinderRequests.removeFirst()
+        startFinderRequest(request)
+        return true
+    }
+    private func startFinderRequest(_ request: FinderCompressionRequest) {
         activeFinderRequest = request
         analyzeInputs(request.inputs, compressWhenReady: true)
         onFinderTaskStarted?()
-        return true
     }
     func removeFinderRequest(id: UUID) {
         guard acceptsNewInput else { return }
