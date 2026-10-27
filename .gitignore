@@ -1,8 +1,16 @@
-# Swift build products and module caches
+# Build output and SwiftPM workspace data
 /.build/
-
-# Generated app bundle and icon variants
+/.swiftpm/
 /dist/
 
-# macOS Finder metadata
+# Local development files
+/Makefile
+/Tests/
+/Tools/
+/docs/
+
+# Optional local 7-Zip binary supplied at build time
+/Kkuk/Resources/Helpers/7zz
+
+# macOS metadata
 .DS_Store
