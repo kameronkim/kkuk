@@ -125,7 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
     private func finishSuccessfulService() {
-        guard model.result != nil, model.pendingFinderRequests.isEmpty, terminationState == .idle else { return }
+        guard model.canFinishSession, terminationState == .idle else { return }
         terminationState = .waitingForSound
         model.acceptsNewInput = false
         model.completionSound.whenFinished { [weak self] in

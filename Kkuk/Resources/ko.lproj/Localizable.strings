@@ -75,7 +75,13 @@
 "Choose items in the same folder." = "같은 폴더 안의 항목을 선택해 주세요.";
 
 "%@ and %d more" = "%@ 외 %d개";
-"View queued tasks" = "대기 작업 보기";
 "Queued tasks" = "대기 작업";
 "Remove from queue" = "대기 목록에서 제거";
 "Remove %@ from queue" = "%@ 대기 목록에서 제거";
+
+"%d failed" = "실패 %d개";
+"View compression tasks" = "압축 작업 보기";
+"Compression tasks" = "압축 작업";
+"Failed tasks" = "실패한 작업";
+"Retry" = "다시 시도";
+"Retry %@" = "%@ 다시 시도";

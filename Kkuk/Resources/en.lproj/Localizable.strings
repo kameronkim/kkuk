@@ -75,7 +75,13 @@
 "Choose items in the same folder." = "Choose items in the same folder.";
 
 "%@ and %d more" = "%@ and %d more";
-"View queued tasks" = "View queued tasks";
 "Queued tasks" = "Queued tasks";
 "Remove from queue" = "Remove from queue";
 "Remove %@ from queue" = "Remove %@ from queue";
+
+"%d failed" = "%d failed";
+"View compression tasks" = "View compression tasks";
+"Compression tasks" = "Compression tasks";
+"Failed tasks" = "Failed tasks";
+"Retry" = "Retry";
+"Retry %@" = "Retry %@";
