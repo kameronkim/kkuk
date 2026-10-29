@@ -134,6 +134,9 @@ public enum InputScanner {
             case mode_t(S_IFSOCK): type = .typeSocket
             default: type = .typeUnknown
             }
+            if isFinderIcon && type != .typeRegular {
+                throw KkukError.unsupportedFileName(url.lastPathComponent)
+            }
             // Unix sockets are live communication endpoints, not archive data.
             // Classify by filesystem type, preserving regular files and symbolic links.
             if type == .typeSocket {
@@ -143,9 +146,6 @@ public enum InputScanner {
             }
             guard type == .typeDirectory || type == .typeRegular || type == .typeSymbolicLink else {
                 throw KkukError.unsupportedInput(path)
-            }
-            if isFinderIcon && type != .typeRegular {
-                throw KkukError.unsupportedFileName(url.lastPathComponent)
             }
             let link = type == .typeSymbolicLink ? try FileManager.default.destinationOfSymbolicLink(atPath: url.path) : nil
             let entry = InputEntry(path: path,
