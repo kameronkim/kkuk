@@ -28,15 +28,20 @@ struct FinderTaskSession {
         !busy && acceptsInput && hasResult && active == nil && !hasTasks
     }
     mutating func enqueue(_ inputs: [URL]) { pending.append(FinderCompressionRequest(inputs: inputs)) }
-    mutating func takeNext() -> FinderCompressionRequest? {
-        guard !pending.isEmpty else { return nil }
-        return pending.removeFirst()
+    // Selection and activation are one transition: callers cannot dequeue a task
+    // without recording it as active, or replace work already in progress.
+    mutating func startNext() -> FinderCompressionRequest? {
+        guard active == nil, !pending.isEmpty else { return nil }
+        let request = pending.removeFirst()
+        active = request
+        return request
     }
-    func retryRequest(id: UUID) -> FinderCompressionRequest? {
-        guard !pending.contains(where: { $0.id == id }) else { return nil }
-        return failures.first { $0.id == id }?.request
+    mutating func startRetry(id: UUID) -> FinderCompressionRequest? {
+        guard active == nil, !pending.contains(where: { $0.id == id }),
+              let request = failures.first(where: { $0.id == id })?.request else { return nil }
+        active = request
+        return request
     }
-    mutating func begin(_ request: FinderCompressionRequest) { active = request }
     mutating func succeed() {
         if let active { failures.removeAll { $0.id == active.id } }
         active = nil

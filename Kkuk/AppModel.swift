@@ -46,7 +46,7 @@ final class AppModel: ObservableObject {
     }
     @discardableResult
     func retryFailedFinderRequest(id: UUID) -> Bool {
-        guard canRetryFailedRequest, let request = finderSession.retryRequest(id: id) else { return false }
+        guard canRetryFailedRequest, let request = finderSession.startRetry(id: id) else { return false }
         // Keep the failure visible until this exact request succeeds. Start with URLs,
         // never the old snapshot or preset, so source and memory are checked again.
         startFinderRequest(request)
@@ -74,12 +74,11 @@ final class AppModel: ObservableObject {
     }
     @discardableResult
     func resumeFinderQueue() -> Bool {
-        guard !busy, acceptsNewInput, let request = finderSession.takeNext() else { return false }
+        guard !busy, acceptsNewInput, let request = finderSession.startNext() else { return false }
         startFinderRequest(request)
         return true
     }
     private func startFinderRequest(_ request: FinderCompressionRequest) {
-        finderSession.begin(request)
         analyzeInputs(request.inputs, compressWhenReady: true)
         onFinderTaskStarted?()
     }
