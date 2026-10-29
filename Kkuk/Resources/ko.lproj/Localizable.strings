@@ -85,3 +85,6 @@
 "Failed tasks" = "실패한 작업";
 "Retry" = "다시 시도";
 "Retry %@" = "%@ 다시 시도";
+
+"Exclude from failures" = "실패 기록에서 제외";
+"Exclude %@ from failures" = "실패 기록에서 %@ 제외";

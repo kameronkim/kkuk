@@ -85,3 +85,6 @@
 "Failed tasks" = "Failed tasks";
 "Retry" = "Retry";
 "Retry %@" = "Retry %@";
+
+"Exclude from failures" = "Exclude from failures";
+"Exclude %@ from failures" = "Exclude %@ from failures";

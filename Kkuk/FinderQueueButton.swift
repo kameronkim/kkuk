@@ -46,6 +46,14 @@ struct FinderQueueButton: View {
                                         .disabled(!model.canRetryFailedRequest)
                                         .accessibilityLabel(L10n.format("Retry %@", failure.request.title))
                                         .accessibilityHint(sourcePath)
+                                    Button { model.dismissFailedFinderRequest(id: failure.id) } label: {
+                                        Image(systemName: "minus.circle")
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(!model.canDismissFailedFinderRequest(id: failure.id))
+                                    .help(L10n.text("Exclude from failures"))
+                                    .accessibilityLabel(L10n.format("Exclude %@ from failures", failure.request.title))
+                                    .accessibilityHint(sourcePath)
                                 }.padding(.vertical, 9)
                                 Rectangle().fill(KkukTheme.line).frame(height: 1)
                             }
