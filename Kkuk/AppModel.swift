@@ -1,7 +1,6 @@
 import AppKit
 import Darwin
 import SwiftUI
-import UniformTypeIdentifiers
 import KkukCore
 
 @MainActor
@@ -14,7 +13,7 @@ final class AppModel: ObservableObject {
     private var scanGaugeTask: DispatchWorkItem?
     private var scanRunner: ProcessRunner?
     private var continuesQueueAfterCancellation = false
-    private var pendingInputRequest: UUID?
+    private let inputSelection = InputSelectionController()
     @Published private(set) var snapshot: InputSnapshot?
     @Published private(set) var preset: CompressionPreset?
     @Published private(set) var busy = false
@@ -69,7 +68,7 @@ final class AppModel: ObservableObject {
     @discardableResult
     func enqueueFinderInputs(_ inputs: [URL]) -> Bool {
         guard acceptsNewInput, !inputs.isEmpty, inputs.allSatisfy(\.isFileURL) else { return false }
-        pendingInputRequest = nil
+        inputSelection.invalidatePendingDrop()
         finderSession.enqueue(inputs)
         if !busy, error == nil { resumeFinderQueue() }
         return true
@@ -96,32 +95,13 @@ final class AppModel: ObservableObject {
     @discardableResult
     func loadDroppedInput(_ provider: NSItemProvider) -> Bool {
         guard canChooseInput else { return false }
-        let request = UUID()
-        pendingInputRequest = request
-        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { [weak self] item, _ in
-            let url: URL?
-            if let data = item as? Data { url = URL(dataRepresentation: data, relativeTo: nil) }
-            else if let value = item as? URL { url = value }
-            else { url = nil }
-            DispatchQueue.main.async {
-                guard let self, self.pendingInputRequest == request else { return }
-                self.pendingInputRequest = nil
-                if let url, url.isFileURL { self.analyze(url) }
-            }
-        }
+        inputSelection.load(provider) { [weak self] url in self?.analyze(url) }
         return true
     }
     @discardableResult
     func chooseInput() -> Bool {
         guard canChooseInput else { return false }
-        pendingInputRequest = nil
-        let panel = NSOpenPanel()
-        panel.title = L10n.text("Choose a file or folder to compress")
-        panel.prompt = L10n.text("Choose")
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = true
-        panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url, canChooseInput else { return false }
+        guard let url = inputSelection.choose(), canChooseInput else { return false }
         analyze(url)
         return true
     }
@@ -131,7 +111,7 @@ final class AppModel: ObservableObject {
     }
     private func analyzeInputs(_ inputs: [URL], compressWhenReady: Bool) {
         guard !busy, acceptsNewInput, let folder = inputs.first else { return }
-        pendingInputRequest = nil
+        inputSelection.invalidatePendingDrop()
         let scanRunner = ProcessRunner()
         self.scanRunner = scanRunner
         cancellationRequested = false
@@ -179,7 +159,7 @@ final class AppModel: ObservableObject {
     }
     private func start(inputs: [URL], freshSnapshot: InputSnapshot? = nil) {
         guard !busy else { return }
-        pendingInputRequest = nil
+        inputSelection.invalidatePendingDrop()
         let job = ArchiveJob(engine: engine)
         self.job = job
         cancellationRequested = false
@@ -302,7 +282,7 @@ final class AppModel: ObservableObject {
         return L10n.text("Check the source and destination, then try again.")
     }
     func reveal() {
-        if let result { NSWorkspace.shared.activateFileViewerSelecting([result.url]) }
+        if let result { InputSelectionController.reveal(result.url) }
     }
     static func bytes(_ value: UInt64) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(clamping: value), countStyle: .file)
