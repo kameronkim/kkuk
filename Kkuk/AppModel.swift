@@ -1,30 +1,6 @@
 import AppKit
-import Darwin
-import SwiftUI
-import UniformTypeIdentifiers
+import Combine
 import KkukCore
-
-struct FinderCompressionRequest: Identifiable {
-    let id = UUID()
-    let inputs: [URL]
-    private let inputCount: Int
-
-    init(inputs: [URL]) {
-        self.inputs = inputs
-        inputCount = Set(inputs).count
-    }
-
-    var title: String {
-        guard let first = inputs.first else { return L10n.text("Kkuk") }
-        return inputCount == 1 ? first.lastPathComponent : L10n.format("%@ and %d more", first.lastPathComponent, inputCount - 1)
-    }
-}
-
-struct FailedFinderRequest: Identifiable {
-    let request: FinderCompressionRequest
-    let reason: String
-    var id: UUID { request.id }
-}
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -36,21 +12,22 @@ final class AppModel: ObservableObject {
     private var scanGaugeTask: DispatchWorkItem?
     private var scanRunner: ProcessRunner?
     private var continuesQueueAfterCancellation = false
-    private var pendingInputRequest: UUID?
+    private let inputSelection = InputSelectionController()
     @Published private(set) var snapshot: InputSnapshot?
     @Published private(set) var preset: CompressionPreset?
     @Published private(set) var busy = false
     @Published var acceptsNewInput = true
     @Published private(set) var status = ""
-    var detail: String { result.map(Self.resultDetail) ?? "" }
+    var detail: String { result.map(TaskPresentation.resultDetail) ?? "" }
     @Published private(set) var progress: Double?
     @Published private(set) var error: String?
+    private var errorFinderRequestID: UUID?
     @Published private(set) var result: ArchiveResult?
     private var job: ArchiveJob?
     private var cancellationRequested = false
-    @Published private(set) var pendingFinderRequests: [FinderCompressionRequest] = []
-    @Published private(set) var failedFinderRequests: [FailedFinderRequest] = []
-    private var activeFinderRequest: FinderCompressionRequest?
+    @Published private var finderSession = FinderTaskSession()
+    var pendingFinderRequests: [FinderCompressionRequest] { finderSession.pending }
+    var failedFinderRequests: [FailedFinderRequest] { finderSession.failures }
     private let memoryBudget: @Sendable () -> UInt64
     let engine: URL
     var onFinderTaskStarted: (() -> Void)?
@@ -63,78 +40,76 @@ final class AppModel: ObservableObject {
         self.engine = engine
         self.memoryBudget = memoryBudget
     }
-    var hasFinderTasks: Bool { !pendingFinderRequests.isEmpty || !failedFinderRequests.isEmpty }
+    var hasFinderTasks: Bool { finderSession.hasTasks }
     var canRetryFailedRequest: Bool { !busy && acceptsNewInput }
     var canFinishSession: Bool {
-        !busy && acceptsNewInput && result != nil && pendingFinderRequests.isEmpty && failedFinderRequests.isEmpty
+        finderSession.canFinish(busy: busy, acceptsInput: acceptsNewInput, hasResult: result != nil)
     }
     @discardableResult
     func retryFailedFinderRequest(id: UUID) -> Bool {
-        guard canRetryFailedRequest, let failure = failedFinderRequests.first(where: { $0.id == id }),
-              !pendingFinderRequests.contains(where: { $0.id == id }) else { return false }
+        guard canRetryFailedRequest, let request = finderSession.startRetry(id: id) else { return false }
         // Keep the failure visible until this exact request succeeds. Start with URLs,
         // never the old snapshot or preset, so source and memory are checked again.
-        startFinderRequest(failure.request)
+        startFinderRequest(request)
+        return true
+    }
+    func canDismissFailedFinderRequest(id: UUID) -> Bool {
+        acceptsNewInput && finderSession.canDismiss(id: id)
+    }
+    @discardableResult
+    func dismissFailedFinderRequest(id: UUID) -> Bool {
+        guard acceptsNewInput, finderSession.dismiss(id: id) else { return false }
+        // Clear only the displayed error owned by this record. Other failures and
+        // errors (including manual input errors) remain untouched.
+        if errorFinderRequestID == id {
+            error = nil
+            errorFinderRequestID = nil
+            status = ""
+        }
+        // Exclusion never resumes waiting work or creates a successful result.
+        finishCompletedWork()
         return true
     }
     // Only URLs wait in the queue. Scan and choose a memory budget at execution time.
     @discardableResult
     func enqueueFinderInputs(_ inputs: [URL]) -> Bool {
         guard acceptsNewInput, !inputs.isEmpty, inputs.allSatisfy(\.isFileURL) else { return false }
-        pendingInputRequest = nil
-        pendingFinderRequests.append(FinderCompressionRequest(inputs: inputs))
-        if !busy, error == nil { resumeFinderQueue() }
+        inputSelection.invalidatePendingDrop()
+        let startsNewQueue = pendingFinderRequests.isEmpty
+        finderSession.enqueue(inputs)
+        // An existing idle queue may be paused after a dismissed error. Adding
+        // another request must not substitute for the user's Continue action.
+        if startsNewQueue, !busy, error == nil { resumeFinderQueue() }
         return true
     }
     @discardableResult
     func resumeFinderQueue() -> Bool {
-        guard !busy, acceptsNewInput, !pendingFinderRequests.isEmpty else { return false }
-        let request = pendingFinderRequests.removeFirst()
+        guard !busy, acceptsNewInput, let request = finderSession.startNext() else { return false }
         startFinderRequest(request)
         return true
     }
     private func startFinderRequest(_ request: FinderCompressionRequest) {
-        activeFinderRequest = request
         analyzeInputs(request.inputs, compressWhenReady: true)
         onFinderTaskStarted?()
     }
     func removeFinderRequest(id: UUID) {
         guard acceptsNewInput else { return }
-        pendingFinderRequests.removeAll { $0.id == id }
+        finderSession.removePending(id: id)
     }
-    func discardFinderQueue() { pendingFinderRequests.removeAll() }
+    func discardFinderQueue() { finderSession.discardPending() }
 
     var canChooseInput: Bool { !busy && acceptsNewInput && pendingFinderRequests.isEmpty }
 
     @discardableResult
     func loadDroppedInput(_ provider: NSItemProvider) -> Bool {
         guard canChooseInput else { return false }
-        let request = UUID()
-        pendingInputRequest = request
-        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { [weak self] item, _ in
-            let url: URL?
-            if let data = item as? Data { url = URL(dataRepresentation: data, relativeTo: nil) }
-            else if let value = item as? URL { url = value }
-            else { url = nil }
-            DispatchQueue.main.async {
-                guard let self, self.pendingInputRequest == request else { return }
-                self.pendingInputRequest = nil
-                if let url, url.isFileURL { self.analyze(url) }
-            }
-        }
+        inputSelection.load(provider) { [weak self] url in self?.analyze(url) }
         return true
     }
     @discardableResult
     func chooseInput() -> Bool {
         guard canChooseInput else { return false }
-        pendingInputRequest = nil
-        let panel = NSOpenPanel()
-        panel.title = L10n.text("Choose a file or folder to compress")
-        panel.prompt = L10n.text("Choose")
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = true
-        panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url, canChooseInput else { return false }
+        guard let url = inputSelection.choose(), canChooseInput else { return false }
         analyze(url)
         return true
     }
@@ -144,7 +119,7 @@ final class AppModel: ObservableObject {
     }
     private func analyzeInputs(_ inputs: [URL], compressWhenReady: Bool) {
         guard !busy, acceptsNewInput, let folder = inputs.first else { return }
-        pendingInputRequest = nil
+        inputSelection.invalidatePendingDrop()
         let scanRunner = ProcessRunner()
         self.scanRunner = scanRunner
         cancellationRequested = false
@@ -162,6 +137,7 @@ final class AppModel: ObservableObject {
         scanGaugeTask = gaugeTask
         // Six frames at 60 Hz; delay only the gauge, never the input metadata.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: gaugeTask)
+        errorFinderRequestID = nil
         busy = true; error = nil; result = nil; snapshot = nil; preset = nil
         status = ""; progress = nil
         let memoryBudget = self.memoryBudget
@@ -192,11 +168,12 @@ final class AppModel: ObservableObject {
     }
     private func start(inputs: [URL], freshSnapshot: InputSnapshot? = nil) {
         guard !busy else { return }
-        pendingInputRequest = nil
+        inputSelection.invalidatePendingDrop()
         let job = ArchiveJob(engine: engine)
         self.job = job
         cancellationRequested = false
         continuesQueueAfterCancellation = false
+        errorFinderRequestID = nil
         busy = true; error = nil; result = nil; progress = nil
         status = L10n.text("Preparing compression")
         let memoryBudget = self.memoryBudget
@@ -222,10 +199,7 @@ final class AppModel: ObservableObject {
                 DispatchQueue.main.async {
                     self.cancellationRequested = false
                     self.continuesQueueAfterCancellation = false
-                    if let request = self.activeFinderRequest {
-                        self.failedFinderRequests.removeAll { $0.id == request.id }
-                    }
-                    self.activeFinderRequest = nil
+                    self.finderSession.succeed()
                     self.result = result; self.busy = false; self.job = nil; self.progress = nil
                     self.status = L10n.text("Compression and verification complete")
                     self.onTaskFinished?()
@@ -267,81 +241,21 @@ final class AppModel: ObservableObject {
         let wasCancelled: Bool
         if let kkukError = failure as? KkukError, case .cancelled = kkukError {
             wasCancelled = true
+            errorFinderRequestID = nil
             error = nil; status = L10n.text("Canceled")
         } else {
             wasCancelled = false
-            let reason = Self.userFacingError(failure)
+            let reason = TaskPresentation.userFacingError(failure)
+            errorFinderRequestID = finderSession.active?.id
             error = reason; status = L10n.text("Could not compress.")
-            if let request = activeFinderRequest {
-                let record = FailedFinderRequest(request: request, reason: reason)
-                if let index = failedFinderRequests.firstIndex(where: { $0.id == request.id }) {
-                    failedFinderRequests[index] = record
-                } else {
-                    failedFinderRequests.append(record)
-                }
-            }
         }
-        activeFinderRequest = nil
+        finderSession.fail(reason: wasCancelled ? nil : error)
         onTaskFinished?()
         // ArchiveJob has already cleaned its temporary directory before reaching here.
         if wasCancelled && continueQueue { resumeFinderQueue() }
     }
-    static func userFacingError(_ failure: Error) -> String {
-        // Keep engine transcripts, file paths and error codes out of the interface.
-        if let error = failure as? KkukError {
-            let key: String
-            switch error {
-            case .inputMissing: key = "Choose a file or folder to compress."
-            case .differentInputLocations: key = "Choose items in the same folder."
-            case .systemRoot: key = "Choose a file or folder instead of the system root."
-            case .unsupportedFileName: key = "Rename files containing line breaks, then choose the input again."
-            case .unsupportedInput: key = "Choose a regular file or folder."
-            case .engineUnavailable: key = "Reinstall the app, then try again."
-            case .unsafeDestination: key = "Move the source to a private folder, then try again."
-            case .insufficientMemory: key = "Close other apps, then try again."
-            case .sourceChanged: key = "Finish making changes to the source, then compress again."
-            case .archiveContentsMismatch: key = "Choose the source again, then compress."
-            case .engineFailed: key = "Check the source and destination, then try again."
-            case .cancelled: key = "Canceled"
-            }
-            return L10n.text(key)
-        }
-        let error = failure as NSError
-        if error.domain == NSPOSIXErrorDomain {
-            switch Int32(error.code) {
-            case ENOSPC, EDQUOT: return L10n.text("Free up disk space, then try again.")
-            case EACCES, EPERM: return L10n.text("Check access permissions for the source and destination.")
-            case ENOENT, ENOTDIR: return L10n.text("Choose the source file or folder again.")
-            default: break
-            }
-        }
-        if error.domain == NSCocoaErrorDomain {
-            switch CocoaError.Code(rawValue: error.code) {
-            case .fileWriteOutOfSpace: return L10n.text("Free up disk space, then try again.")
-            case .fileReadNoPermission, .fileWriteNoPermission: return L10n.text("Check access permissions for the source and destination.")
-            case .fileNoSuchFile, .fileReadNoSuchFile: return L10n.text("Choose the source file or folder again.")
-            default: break
-            }
-        }
-        return L10n.text("Check the source and destination, then try again.")
-    }
     func reveal() {
         if let result { NSWorkspace.shared.activateFileViewerSelecting([result.url]) }
-    }
-    static func bytes(_ value: UInt64) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(clamping: value), countStyle: .file)
-    }
-    static func resultDetail(_ result: ArchiveResult) -> String {
-        let change: String
-        if result.originalBytes == 0 {
-            change = L10n.text("Empty item archived")
-        } else if result.archiveBytes > result.originalBytes {
-            change = L10n.text("Size increased slightly")
-        } else {
-            let percent = (1 - Double(result.archiveBytes) / Double(result.originalBytes)) * 100
-            change = L10n.format("%.1f%% smaller", percent)
-        }
-        return "\(bytes(result.originalBytes)) → \(bytes(result.archiveBytes)) · \(change)"
     }
     var canCancel: Bool { job != nil || scanRunner != nil }
 }
