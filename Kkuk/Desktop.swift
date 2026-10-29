@@ -149,7 +149,7 @@ struct CompressionView: View {
     }
     private var inputMetadata: String {
         if let snapshot = model.snapshot {
-            return snapshot.isDirectory ? L10n.format(snapshot.fileCount == 1 ? "%@ · %@ file" : "%@ · %@ files", AppModel.bytes(snapshot.totalBytes), snapshot.fileCount.formatted()) : AppModel.bytes(snapshot.totalBytes)
+            return snapshot.isDirectory ? L10n.format(snapshot.fileCount == 1 ? "%@ · %@ file" : "%@ · %@ files", TaskPresentation.bytes(snapshot.totalBytes), snapshot.fileCount.formatted()) : TaskPresentation.bytes(snapshot.totalBytes)
         }
         guard model.selectedInput != nil else { return L10n.text("Or click to choose.") }
         guard model.scanning else { return L10n.text("Could not read file information.") }
