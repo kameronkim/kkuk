@@ -37,5 +37,4 @@ final class InputSelectionController {
         panel.allowsMultipleSelection = false
         return panel.runModal() == .OK ? panel.url : nil
     }
-    static func reveal(_ url: URL) { NSWorkspace.shared.activateFileViewerSelecting([url]) }
 }

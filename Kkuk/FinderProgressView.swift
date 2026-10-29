@@ -51,10 +51,10 @@ struct FinderProgressView: View {
                                 .buttonStyle(.plain).font(.system(size: 10))
                                 .disabled(!model.canCancelCurrentTask)
                         }
-                    } else if !model.busy, !model.pendingFinderRequests.isEmpty {
+                    } else if !model.pendingFinderRequests.isEmpty {
                         Button(L10n.text("Continue queue")) { model.resumeFinderQueue() }
                             .buttonStyle(.plain).font(.system(size: 10))
-                    } else if !model.busy, model.result != nil {
+                    } else if model.result != nil {
                         Button(L10n.text("Show in Finder"), action: model.reveal)
                             .buttonStyle(.plain).font(.system(size: 10))
                     }

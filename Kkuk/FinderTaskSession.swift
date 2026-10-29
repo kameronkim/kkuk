@@ -3,16 +3,11 @@ import Foundation
 struct FinderCompressionRequest: Identifiable {
     let id = UUID()
     let inputs: [URL]
-    private let inputCount: Int
+    let inputCount: Int
 
     init(inputs: [URL]) {
         self.inputs = inputs
         inputCount = Set(inputs).count
-    }
-
-    var title: String {
-        guard let first = inputs.first else { return L10n.text("Kkuk") }
-        return inputCount == 1 ? first.lastPathComponent : L10n.format("%@ and %d more", first.lastPathComponent, inputCount - 1)
     }
 }
 
