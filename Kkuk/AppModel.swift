@@ -21,6 +21,7 @@ final class AppModel: ObservableObject {
     var detail: String { result.map(TaskPresentation.resultDetail) ?? "" }
     @Published private(set) var progress: Double?
     @Published private(set) var error: String?
+    private var errorFinderRequestID: UUID?
     @Published private(set) var result: ArchiveResult?
     private var job: ArchiveJob?
     private var cancellationRequested = false
@@ -58,8 +59,14 @@ final class AppModel: ObservableObject {
     @discardableResult
     func dismissFailedFinderRequest(id: UUID) -> Bool {
         guard acceptsNewInput, finderSession.dismiss(id: id) else { return false }
-        // This only forgets the selected session record. The shared completion guard
-        // still requires no current/queued work, no failures, and a successful result.
+        // Clear only the displayed error owned by this record. Other failures and
+        // errors (including manual input errors) remain untouched.
+        if errorFinderRequestID == id {
+            error = nil
+            errorFinderRequestID = nil
+            status = ""
+        }
+        // Exclusion never resumes waiting work or creates a successful result.
         finishCompletedWork()
         return true
     }
@@ -68,8 +75,11 @@ final class AppModel: ObservableObject {
     func enqueueFinderInputs(_ inputs: [URL]) -> Bool {
         guard acceptsNewInput, !inputs.isEmpty, inputs.allSatisfy(\.isFileURL) else { return false }
         inputSelection.invalidatePendingDrop()
+        let startsNewQueue = pendingFinderRequests.isEmpty
         finderSession.enqueue(inputs)
-        if !busy, error == nil { resumeFinderQueue() }
+        // An existing idle queue may be paused after a dismissed error. Adding
+        // another request must not substitute for the user's Continue action.
+        if startsNewQueue, !busy, error == nil { resumeFinderQueue() }
         return true
     }
     @discardableResult
@@ -127,6 +137,7 @@ final class AppModel: ObservableObject {
         scanGaugeTask = gaugeTask
         // Six frames at 60 Hz; delay only the gauge, never the input metadata.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: gaugeTask)
+        errorFinderRequestID = nil
         busy = true; error = nil; result = nil; snapshot = nil; preset = nil
         status = ""; progress = nil
         let memoryBudget = self.memoryBudget
@@ -162,6 +173,7 @@ final class AppModel: ObservableObject {
         self.job = job
         cancellationRequested = false
         continuesQueueAfterCancellation = false
+        errorFinderRequestID = nil
         busy = true; error = nil; result = nil; progress = nil
         status = L10n.text("Preparing compression")
         let memoryBudget = self.memoryBudget
@@ -229,10 +241,12 @@ final class AppModel: ObservableObject {
         let wasCancelled: Bool
         if let kkukError = failure as? KkukError, case .cancelled = kkukError {
             wasCancelled = true
+            errorFinderRequestID = nil
             error = nil; status = L10n.text("Canceled")
         } else {
             wasCancelled = false
             let reason = TaskPresentation.userFacingError(failure)
+            errorFinderRequestID = finderSession.active?.id
             error = reason; status = L10n.text("Could not compress.")
         }
         finderSession.fail(reason: wasCancelled ? nil : error)
