@@ -77,6 +77,19 @@ final class AppModel: ObservableObject {
         startFinderRequest(failure.request)
         return true
     }
+    func canDismissFailedFinderRequest(id: UUID) -> Bool {
+        acceptsNewInput && activeFinderRequest?.id != id && failedFinderRequests.contains { $0.id == id }
+    }
+    @discardableResult
+    func dismissFailedFinderRequest(id: UUID) -> Bool {
+        guard canDismissFailedFinderRequest(id: id),
+              let index = failedFinderRequests.firstIndex(where: { $0.id == id }) else { return false }
+        // This only forgets the selected session record. The shared completion guard
+        // still requires no current/queued work, no failures, and a successful result.
+        failedFinderRequests.remove(at: index)
+        finishCompletedWork()
+        return true
+    }
     // Only URLs wait in the queue. Scan and choose a memory budget at execution time.
     @discardableResult
     func enqueueFinderInputs(_ inputs: [URL]) -> Bool {
